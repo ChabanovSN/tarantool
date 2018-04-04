@@ -736,7 +736,7 @@ test:do_eqp_test(7.1, "SELECT count(*) FROM t1", {
     {0, 0, 0, "SCAN TABLE T1"},
 })
 test:do_eqp_test(7.2, "SELECT count(*) FROM t2", {
-    {0, 0, 0, "SCAN TABLE T2 USING COVERING INDEX I1"},
+    {0, 0, 0, "SCAN TABLE T2"},
 })
 -- MUST_WORK_TEST
 if (0 > 0)
