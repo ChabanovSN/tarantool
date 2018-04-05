@@ -687,21 +687,9 @@ static void find_references(struct lua_yaml_dumper *dumper) {
    }
 }
 
-/**
- * Encode a Lua object or objects into YAML documents onto Lua
- * stack.
- * @param L Lua stack to get arguments and push result.
- * @param serializer Lua YAML serializer.
- * @param tag_handle NULL, or a global tag handle. Handle becomes
- *        a synonym for prefix.
- * @param tag_prefix NULL, or a global tag prefix, to which @a
- *        handle is expanded.
- * @retval nil, error Error.
- * @retval not nil Lua string with dumped object.
- */
-static int
-lua_yaml_encode_impl(lua_State *L, struct luaL_serializer *serializer,
-                     const char *tag_handle, const char *tag_prefix)
+int
+lua_yaml_encode_tagged(lua_State *L, struct luaL_serializer *serializer,
+                       const char *tag_handle, const char *tag_prefix)
 {
    struct lua_yaml_dumper dumper;
    int i, argcount = lua_gettop(L);
@@ -779,7 +767,7 @@ error:
 }
 
 static int l_dump(lua_State *L) {
-   return lua_yaml_encode_impl(L, luaL_checkserializer(L), NULL, NULL);
+   return lua_yaml_encode_tagged(L, luaL_checkserializer(L), NULL, NULL);
 }
 
 /**
@@ -809,11 +797,15 @@ usage_error:
    lua_pop(L, 2);
    lua_replace(L, 1);
    lua_settop(L, 1);
-   return lua_yaml_encode_impl(L, serializer, handle, prefix);
+   return lua_yaml_encode_tagged(L, serializer, handle, prefix);
 }
 
 static int
-l_new(lua_State *L);
+l_new(lua_State *L)
+{
+   lua_yaml_new_serializer(L);
+   return 1;
+}
 
 static const luaL_Reg yamllib[] = {
    { "encode", l_dump },
@@ -824,12 +816,12 @@ static const luaL_Reg yamllib[] = {
    { NULL, NULL}
 };
 
-static int
-l_new(lua_State *L)
+struct luaL_serializer *
+lua_yaml_new_serializer(lua_State *L)
 {
    struct luaL_serializer *s = luaL_newserializer(L, NULL, yamllib);
    s->has_compact = 1;
-   return 1;
+   return s;
 }
 
 int
