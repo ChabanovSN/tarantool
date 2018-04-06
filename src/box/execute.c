@@ -589,7 +589,7 @@ sql_execute(sqlite3 *db, struct sqlite3_stmt *stmt, int column_count,
  * @retval -1 Client or memory error.
  */
 static inline int
-sql_execute_and_encode(sqlite3 *db, struct sqlite3_stmt *stmt, struct obuf *out,
+sql_execute_and_encode(sqlite3 *db, struct sqlite3_stmt *stmt, struct obuf **out,
 		       uint64_t sync, struct region *region)
 {
 	struct port port;
@@ -604,33 +604,33 @@ sql_execute_and_encode(sqlite3 *db, struct sqlite3_stmt *stmt, struct obuf *out,
 	 */
 	struct obuf_svp header_svp;
 	/* Prepare memory for the iproto header. */
-	if (iproto_prepare_header(out, &header_svp, IPROTO_SQL_HEADER_LEN) != 0)
+	if (iproto_prepare_header(*out, &header_svp, IPROTO_SQL_HEADER_LEN) != 0)
 		goto err_execute;
 	int keys;
 	if (column_count > 0) {
-		if (sql_get_description(stmt, out, column_count) != 0)
+		if (sql_get_description(stmt, *out, column_count) != 0)
 			goto err_body;
 		keys = 2;
-		if (iproto_reply_array_key(out, port_tuple->size,
+		if (iproto_reply_array_key(*out, port_tuple->size,
 					   IPROTO_DATA) != 0)
 			goto err_body;
 		/*
 		 * Just like SELECT, SQL uses output format compatible
 		 * with Tarantool 1.6
 		 */
-		if (port_dump_16(&port, out) < 0) {
+		if (port_dump_16(&port, *out) < 0) {
 			/* Failed port dump destroyes the port. */
 			goto err_body;
 		}
 	} else {
 		keys = 1;
 		assert(port_tuple->size == 0);
-		if (iproto_reply_map_key(out, 1, IPROTO_SQL_INFO) != 0)
+		if (iproto_reply_map_key(*out, 1, IPROTO_SQL_INFO) != 0)
 			goto err_body;
 		int changes = sqlite3_changes(db);
 		int size = mp_sizeof_uint(SQL_INFO_ROW_COUNT) +
 			   mp_sizeof_uint(changes);
-		char *buf = obuf_alloc(out, size);
+		char *buf = obuf_alloc(*out, size);
 		if (buf == NULL) {
 			diag_set(OutOfMemory, size, "obuf_alloc", "buf");
 			goto err_body;
@@ -639,18 +639,18 @@ sql_execute_and_encode(sqlite3 *db, struct sqlite3_stmt *stmt, struct obuf *out,
 		buf = mp_encode_uint(buf, changes);
 	}
 	port_destroy(&port);
-	iproto_reply_sql(out, &header_svp, sync, schema_version, keys);
+	iproto_reply_sql(*out, &header_svp, sync, schema_version, keys);
 	return 0;
 
 err_body:
-	obuf_rollback_to_svp(out, &header_svp);
+	obuf_rollback_to_svp(*out, &header_svp);
 err_execute:
 	port_destroy(&port);
 	return -1;
 }
 
 int
-sql_prepare_and_execute(const struct sql_request *request, struct obuf *out,
+sql_prepare_and_execute(const struct sql_request *request, struct obuf **out,
 			struct region *region)
 {
 	const char *sql = request->sql_text;

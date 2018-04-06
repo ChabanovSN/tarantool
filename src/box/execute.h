@@ -112,7 +112,7 @@ xrow_decode_sql(const struct xrow_header *row, struct sql_request *request,
  * @retval -1 Client or memory error.
  */
 int
-sql_prepare_and_execute(const struct sql_request *request, struct obuf *out,
+sql_prepare_and_execute(const struct sql_request *request, struct obuf **out,
 			struct region *region);
 
 #if defined(__cplusplus)

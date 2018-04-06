@@ -1398,7 +1398,7 @@ static void
 tx_process_sql(struct cmsg *m)
 {
 	struct iproto_msg *msg = tx_accept_msg(m);
-	struct obuf *out = msg->connection->tx.p_obuf;
+	struct obuf **out = &msg->connection->tx.p_obuf;
 
 	tx_fiber_init(msg->connection->session, msg->header.sync);
 
@@ -1407,7 +1407,7 @@ tx_process_sql(struct cmsg *m)
 	assert(msg->header.type == IPROTO_EXECUTE);
 	if (sql_prepare_and_execute(&msg->sql, out, &fiber()->gc) != 0)
 		goto error;
-	iproto_wpos_create(&msg->wpos, out);
+	iproto_wpos_create(&msg->wpos, *out);
 	return;
 error:
 	tx_reply_error(msg);
