@@ -86,6 +86,7 @@ replication_init(void)
 	replica_hash_new(&replicaset.hash);
 	rlist_create(&replicaset.anon);
 	vclock_create(&replicaset.vclock);
+	latch_create(&replicaset.applier.order_latch);
 	fiber_cond_create(&replicaset.applier.cond);
 }
 

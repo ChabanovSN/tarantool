@@ -39,6 +39,7 @@
 #include <small/mempool.h>
 #include "fiber_cond.h"
 #include "vclock.h"
+#include "latch.h"
 
 /**
  * @module replication - global state of multi-master
@@ -204,6 +205,8 @@ struct replicaset {
 		 * state.
 		 */
 		struct fiber_cond cond;
+		/* The latch is used to order all replication requests. */
+		struct latch order_latch;
 	} applier;
 };
 extern struct replicaset replicaset;

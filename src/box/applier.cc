@@ -505,7 +505,17 @@ applier_subscribe(struct applier *applier)
 			 */
 			vclock_follow(&replicaset.vclock, row.replica_id,
 				      row.lsn);
-			xstream_write_xc(applier->subscribe_stream, &row);
+		       /* Lock the latch. */
+		       latch_lock(&replicaset.applier.order_latch);
+		       int res = xstream_write(applier->subscribe_stream, &row);
+		       /*
+			* An error might happen before or after wal_write, so
+			* check the latch owner before unlock.
+			*/
+		       if (latch_owner(&replicaset.applier.order_latch) == fiber())
+			       latch_unlock(&replicaset.applier.order_latch);
+		       if (res != 0)
+			       diag_raise();
 		}
 		if (applier->state == APPLIER_SYNC ||
 		    applier->state == APPLIER_FOLLOW)

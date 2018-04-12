@@ -753,6 +753,9 @@ wal_write(struct journal *journal, struct journal_entry *entry)
 	}
 	wal_thread.wal_pipe.n_input += entry->n_rows * XROW_IOVMAX;
 	cpipe_flush_input(&wal_thread.wal_pipe);
+       if (latch_owner(&replicaset.applier.order_latch) == fiber())
+	       /* Current fiber is an applier fiber so unlock the latch. */
+	       latch_unlock(&replicaset.applier.order_latch);
 	/**
 	 * It's not safe to spuriously wakeup this fiber
 	 * since in that case it will ignore a possible
