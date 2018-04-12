@@ -52,6 +52,24 @@ box.error(box.error.UNSUPPORTED, "x", "x%s")
 box.error(box.error.UNSUPPORTED, "x")
 box.error(box.error.UNSUPPORTED)
 
+--
+-- box.error.raise not worked because it is __index method of
+-- box.error and box.error() is the __call method. The second
+-- one takes itself as the first argument.
+--
+box.error(box.error.CREATE_SPACE, "space", "error")
+box.error()
+box.error.raise()
+box.error.raise(box.error.CREATE_SPACE, "space", "error")
+box.error.raise(box.error.UNKNOWN)
+
+--
+-- Allow to rethrow error.
+--
+_, err = pcall(box.error, box.error.UNKNOWN)
+box.error(err)
+box.error.raise(err)
+
 ----------------
 -- # box.stat
 ----------------

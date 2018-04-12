@@ -176,6 +176,45 @@ box.error(box.error.UNSUPPORTED)
 ---
 - error: 'box.error(): bad arguments'
 ...
+--
+-- box.error.raise not worked because it is __index method of
+-- box.error and box.error() is the __call method. The second
+-- one takes itself as the first argument.
+--
+box.error(box.error.CREATE_SPACE, "space", "error")
+---
+- error: 'Failed to create space ''space'': error'
+...
+box.error()
+---
+- error: 'Failed to create space ''space'': error'
+...
+box.error.raise()
+---
+- error: 'Failed to create space ''space'': error'
+...
+box.error.raise(box.error.CREATE_SPACE, "space", "error")
+---
+- error: 'Failed to create space ''space'': error'
+...
+box.error.raise(box.error.UNKNOWN)
+---
+- error: Unknown error
+...
+--
+-- Allow to rethrow error.
+--
+_, err = pcall(box.error, box.error.UNKNOWN)
+---
+...
+box.error(err)
+---
+- error: Unknown error
+...
+box.error.raise(err)
+---
+- error: Unknown error
+...
 ----------------
 -- # box.stat
 ----------------
