@@ -166,6 +166,47 @@ sqlite3NestedParse(Parse * pParse, const char *zFormat, ...)
 	pParse->nested--;
 }
 
+/**
+ * This is a function which should be called during execution
+ * of sqlite3EndTable. It ensures that only PRIMARY KEY
+ * constraint may have ON CONFLICT REPLACE clause.
+ * @param table Space which should be checked.
+ * @retval bool - false, if only primary key constraint has
+ *                ON CONFLICT REPLACE clause or if there are no
+ *                indexes with REPLACE as error action.  In
+ *                other cases it returns true.
+ */
+static bool
+check_on_conflict_replace_entries(Table * table)
+{
+	Index * idx;
+	int i;
+
+	/* Check all NOT NULL constraints */
+	for (i = 0; i < table->nCol; i++) {
+		u8 on_error = table->aCol[i].notNull;
+		if (on_error == ON_CONFLICT_ACTION_REPLACE &&
+		    table->aCol[i].is_primkey == false) {
+			return true;
+		}
+	}
+
+	/* Check all UNIQUE constraints */
+	for (idx = table->pIndex; idx; idx = idx->pNext) {
+		if (idx->onError == ON_CONFLICT_ACTION_REPLACE &&
+		    !IsPrimaryKeyIndex(idx)) {
+			return true;
+		}
+	}
+
+	/*
+	 * CHECK constraints are not allowed to have REPLACE as
+	 * error action and therefore can be skipped.
+	 */
+
+	return false;
+}
+
 /*
  * Locate the in-memory structure that describes a particular database
  * table given the name of that table. Return NULL if not found.
@@ -1872,6 +1913,15 @@ sqlite3EndTable(Parse * pParse,	/* Parse context */
 		} else {
 			convertToWithoutRowidTable(pParse, p);
 		}
+	}
+
+	if (check_on_conflict_replace_entries(p)) {
+		sqlite3ErrorMsg(pParse,
+				"only PRIMARY KEY constraint can "
+				"have ON CONFLICT REPLACE clause "
+				"- %s",
+				p->zName);
+		return;
 	}
 
 #ifndef SQLITE_OMIT_CHECK
