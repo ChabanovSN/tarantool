@@ -105,6 +105,7 @@ space:select{1}
 -- xxx: update comes through, returns 0 rows affected 
 space:update(1, {{'=', 2, 'I am a new tuple'}})
 ---
+- null
 ...
 -- nothing is selected, since nothing was there
 space:select{1}
@@ -208,6 +209,7 @@ space:delete(0)
 ...
 space:delete(4294967295)
 ---
+- null
 ...
 box.space.test:drop()
 ---

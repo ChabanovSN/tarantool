@@ -416,9 +416,11 @@ cn.space.net_box_test_space:select({234}, { iterator = 'LT' })
 ...
 cn.space.net_box_test_space:update({1}, { { '+', 2, 2 } })
 ---
+- null
 ...
 cn.space.net_box_test_space:delete{1}
 ---
+- null
 ...
 cn.space.net_box_test_space:delete{2}
 ---
@@ -426,6 +428,7 @@ cn.space.net_box_test_space:delete{2}
 ...
 cn.space.net_box_test_space:delete{2}
 ---
+- null
 ...
 -- test one-based indexing in splice operation (see update.test.lua)
 cn.space.net_box_test_space:replace({10, 'abcde'})
@@ -754,12 +757,15 @@ remote_space:upsert({3}, {}, { timeout = 1e-9 })
 ...
 remote_space:upsert({4}, {})
 ---
+- null
 ...
 remote_space:upsert({5}, {}, { timeout = 1.00 })
 ---
+- null
 ...
 remote_space:upsert({3}, {})
 ---
+- null
 ...
 remote_space:update({3}, {}, { timeout = 1e-9 })
 ---
@@ -981,12 +987,15 @@ _ = remote_pk:delete({5})
 ...
 remote_space:get(0)
 ---
+- null
 ...
 remote_space:get(1)
 ---
+- null
 ...
 remote_space:get(2)
 ---
+- null
 ...
 remote_space = nil
 ---
@@ -1318,6 +1327,7 @@ c.space.test:select{}
 ...
 c.space.test:upsert({1, 2, 'nothing'}, {{'+', 2, 1}}) -- common update
 ---
+- null
 ...
 c.space.test:select{}
 ---
@@ -1325,6 +1335,7 @@ c.space.test:select{}
 ...
 c.space.test:upsert({2, 4, 'something'}, {{'+', 2, 1}}) -- insert
 ---
+- null
 ...
 c.space.test:select{}
 ---
@@ -1333,6 +1344,7 @@ c.space.test:select{}
 ...
 c.space.test:upsert({2, 4, 'nothing'}, {{'+', 3, 100500}}) -- wrong operation
 ---
+- null
 ...
 c.space.test:select{}
 ---
@@ -1481,6 +1493,7 @@ result
 -- upsert
 c.space.test:upsert({4}, {}, {buffer = ibuf})
 ---
+- 7
 ...
 result, ibuf.rpos = msgpack.decode_unchecked(ibuf.rpos)
 ---
@@ -1492,6 +1505,7 @@ result
 -- delete
 c.space.test:upsert({4}, {}, {buffer = ibuf})
 ---
+- 7
 ...
 result, ibuf.rpos = msgpack.decode_unchecked(ibuf.rpos)
 ---
