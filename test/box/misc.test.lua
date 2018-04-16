@@ -70,6 +70,16 @@ _, err = pcall(box.error, box.error.UNKNOWN)
 box.error(err)
 box.error.raise(err)
 
+--
+-- gh-3031: allow to create an error object with no throwing it.
+--
+e = box.error.new(box.error.UNKNOWN)
+e
+e = box.error.new(box.error.CREATE_SPACE, "space", "error")
+e
+box.error.new()
+box.error.raise()
+
 ----------------
 -- # box.stat
 ----------------

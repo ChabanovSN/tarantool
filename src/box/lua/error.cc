@@ -149,6 +149,17 @@ luaT_error_last(lua_State *L)
 }
 
 static int
+luaT_error_new(lua_State *L)
+{
+	int top = lua_gettop(L);
+	if (top == 0)
+		return luaL_error(L, "Usage: box.error.new(code, args)");
+	luaT_error_create(L, top, 1);
+	lua_settop(L, 0);
+	return luaT_error_last(L);
+}
+
+static int
 luaT_error_clear(lua_State *L)
 {
 	if (lua_gettop(L) >= 1)
@@ -253,6 +264,10 @@ box_lua_error_init(struct lua_State *L) {
 		{
 			lua_pushcfunction(L, luaT_error_raise);
 			lua_setfield(L, -2, "raise");
+		}
+		{
+			lua_pushcfunction(L, luaT_error_new);
+			lua_setfield(L, -2, "new");
 		}
 		lua_setfield(L, -2, "__index");
 	}
