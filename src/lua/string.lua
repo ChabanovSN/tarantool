@@ -285,11 +285,32 @@ local function string_hex(inp)
     local len = inp:len() * 2
     local res = ffi.new('char[?]', len + 1)
 
-    local uinp = ffi.cast('const unsigned char *', inp)
+    local uinp = ffi.cast('const unsigned char *', inp) 
     for i = 0, inp:len() - 1 do
         ffi.C.snprintf(res + i * 2, 3, "%02x", ffi.cast('unsigned', uinp[i]))
     end
     return ffi.string(res, len)
+end
+
+local function string_fromhex(inp)
+    if type(inp) ~= 'string' then
+        error(err_string_arg:format(1, 'string.fromhex', 'string', type(inp)), 2)
+    end
+
+    if inp:len() % 2 ~= 0 then
+        error(err_string_arg:format(1, 'string.fromhex', 'even string', 'odd string'), 2)
+    end
+    local matches = {string.match(inp, '^([0-9A-Fa-f]+)$')}
+    if #matches ~= 1 then
+        error(err_string_arg:format(1, 'string.fromhex', 'hex string', 'not hex string'), 2)
+    end
+
+    local ans = {}
+    for i = 1, inp:len() / 2 do
+        local byte = string.sub(inp, 2 * i - 1, 2 * i)
+        ans[i] = string.char(tonumber(byte, 16))
+    end
+    return table.concat(ans)
 end
 
 local function string_strip(inp)
@@ -323,6 +344,7 @@ string.center     = string_center
 string.startswith = string_startswith
 string.endswith   = string_endswith
 string.hex        = string_hex
+string.fromhex  = string_fromhex
 string.strip      = string_strip
 string.lstrip      = string_lstrip
 string.rstrip      = string_rstrip
