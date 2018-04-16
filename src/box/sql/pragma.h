@@ -221,23 +221,17 @@ static const PragmaName aPragmaName[] = {
 #endif
 #endif
 #if !defined(SQLITE_OMIT_SCHEMA_PRAGMAS)
-	{ /* zName:     */ "index_info",
-	 /* ePragTyp:  */ PragTyp_INDEX_INFO,
-	 /* ePragFlg:  */
-	 PragFlg_NeedSchema | PragFlg_Result1 | PragFlg_SchemaOpt,
-	 /* ColNames:  */ 10, 3,
-	 /* iArg:      */ 0},
 	{ /* zName:     */ "index_list",
 	 /* ePragTyp:  */ PragTyp_INDEX_LIST,
 	 /* ePragFlg:  */
 	 PragFlg_NeedSchema | PragFlg_Result1 | PragFlg_SchemaOpt,
 	 /* ColNames:  */ 19, 5,
 	 /* iArg:      */ 0},
-	{ /* zName:     */ "index_xinfo",
+	{ /* zName:     */ "index_info",
 	 /* ePragTyp:  */ PragTyp_INDEX_INFO,
 	 /* ePragFlg:  */
 	 PragFlg_NeedSchema | PragFlg_Result1 | PragFlg_SchemaOpt,
-	 /* ColNames:  */ 13, 6,
+	 /* ColNames:  */ 13, 7,
 	 /* iArg:      */ 1},
 #endif
 #if defined(SQLITE_HAS_CODEC)
