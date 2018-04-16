@@ -1990,8 +1990,7 @@ sqlite3ResultSetOfSelect(Parse * pParse, Select * pSelect)
 	assert(db->lookaside.bDisable);
 	pTab->nTabRef = 1;
 	pTab->zName = 0;
-	pTab->nRowLogEst = 200;
-	assert(200 == sqlite3LogEst(1048576));
+	pTab->tuple_log_count = DEFAULT_TUPLE_LOG_COUNT;
 	sqlite3ColumnsFromExprList(pParse, pSelect->pEList, &pTab->nCol,
 				   &pTab->aCol);
 	sqlite3SelectAddColumnTypeAndCollation(pParse, pTab, pSelect);
@@ -4527,7 +4526,7 @@ withExpand(Walker * pWalker, struct SrcList_item *pFrom)
 		pTab->nTabRef = 1;
 		pTab->zName = sqlite3DbStrDup(db, pCte->zName);
 		pTab->iPKey = -1;
-		pTab->nRowLogEst = 200;
+		pTab->tuple_log_count = DEFAULT_TUPLE_LOG_COUNT;
 		assert(200 == sqlite3LogEst(1048576));
 		pTab->tabFlags |= TF_Ephemeral;
 		pFrom->pSelect = sqlite3SelectDup(db, pCte->pSelect, 0);
@@ -4721,8 +4720,7 @@ selectExpander(Walker * pWalker, Select * p)
 			sqlite3ColumnsFromExprList(pParse, pSel->pEList,
 						   &pTab->nCol, &pTab->aCol);
 			pTab->iPKey = -1;
-			pTab->nRowLogEst = 200;
-			assert(200 == sqlite3LogEst(1048576));
+			pTab->tuple_log_count = DEFAULT_TUPLE_LOG_COUNT;
 			pTab->tabFlags |= TF_Ephemeral;
 #endif
 		} else {
@@ -5540,7 +5538,7 @@ sqlite3Select(Parse * pParse,		/* The parser context */
 			explainSetInteger(pItem->iSelectId,
 					  (u8) pParse->iNextSelectId);
 			sqlite3Select(pParse, pSub, &dest);
-			pItem->pTab->nRowLogEst = pSub->nSelectRow;
+			pItem->pTab->tuple_log_count = pSub->nSelectRow;
 			pItem->fg.viaCoroutine = 1;
 			pItem->regResult = dest.iSdst;
 			sqlite3VdbeEndCoroutine(v, pItem->regReturn);
@@ -5579,7 +5577,7 @@ sqlite3Select(Parse * pParse,		/* The parser context */
 			explainSetInteger(pItem->iSelectId,
 					  (u8) pParse->iNextSelectId);
 			sqlite3Select(pParse, pSub, &dest);
-			pItem->pTab->nRowLogEst = pSub->nSelectRow;
+			pItem->pTab->tuple_log_count = pSub->nSelectRow;
 			if (onceAddr)
 				sqlite3VdbeJumpHere(v, onceAddr);
 			retAddr =
