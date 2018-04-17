@@ -156,6 +156,8 @@ extern uint32_t instance_id;
 extern struct tt_uuid INSTANCE_UUID;
 /** UUID of the replica set. */
 extern struct tt_uuid REPLICASET_UUID;
+/** Flag of replica's anonymity */
+extern bool ANONYMOUS_REPLICA;
 
 typedef rb_tree(struct replica) replica_hash_t;
 
@@ -256,6 +258,8 @@ struct replica {
 	struct trigger on_applier_state;
 	/** Replica sync state. */
 	enum replica_state state;
+	/** Flag signaling that the replica is anonymous. */
+	bool anonymous;
 };
 
 enum {
@@ -317,6 +321,14 @@ replica_set_relay(struct replica *replica, struct relay *relay);
 void
 replica_clear_relay(struct replica *replica);
 
+/**
+ * Internal setter of anonymous flag.
+ */
+void
+replica_set_anonymous(bool anonymous);
+
+bool
+replica_is_anonymous();
 #if defined(__cplusplus)
 } /* extern "C" */
 

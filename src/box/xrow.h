@@ -264,6 +264,8 @@ xrow_encode_subscribe(struct xrow_header *row,
  * @param[out] replicaset_uuid.
  * @param[out] instance_uuid.
  * @param[out] vclock.
+ * @param[out] version_id.
+ * @param[out] anonymous.
  *
  * @retval  0 Success.
  * @retval -1 Memory or format error.
@@ -271,31 +273,36 @@ xrow_encode_subscribe(struct xrow_header *row,
 int
 xrow_decode_subscribe(struct xrow_header *row, struct tt_uuid *replicaset_uuid,
 		      struct tt_uuid *instance_uuid, struct vclock *vclock,
-		      uint32_t *version_id);
+		      uint32_t *version_id, bool *anonymous);
 
 /**
  * Encode JOIN command.
  * @param[out] row Row to encode into.
  * @param instance_uuid.
+ * @param anonymous - flag signaling if joining replica wants to be anonymous.
  *
  * @retval  0 Success.
  * @retval -1 Memory error.
  */
 int
-xrow_encode_join(struct xrow_header *row, const struct tt_uuid *instance_uuid);
+xrow_encode_join(struct xrow_header *row, const struct tt_uuid *instance_uuid,
+		 bool anonymous);
 
 /**
  * Decode JOIN command.
  * @param row Row to decode.
  * @param[out] instance_uuid.
+ * @param[out] anonymous flag.
  *
  * @retval  0 Success.
  * @retval -1 Memory or format error.
  */
 static inline int
-xrow_decode_join(struct xrow_header *row, struct tt_uuid *instance_uuid)
+xrow_decode_join(struct xrow_header *row, struct tt_uuid *instance_uuid,
+		 bool *anonymous)
 {
-	return xrow_decode_subscribe(row, NULL, instance_uuid, NULL, NULL);
+	return xrow_decode_subscribe(row, NULL, instance_uuid, NULL, NULL,
+				     anonymous);
 }
 
 /**
@@ -320,7 +327,7 @@ xrow_encode_vclock(struct xrow_header *row, const struct vclock *vclock);
 static inline int
 xrow_decode_vclock(struct xrow_header *row, struct vclock *vclock)
 {
-	return xrow_decode_subscribe(row, NULL, NULL, vclock, NULL);
+	return xrow_decode_subscribe(row, NULL, NULL, vclock, NULL, NULL);
 }
 
 /**
@@ -625,27 +632,28 @@ static inline void
 xrow_decode_subscribe_xc(struct xrow_header *row,
 			 struct tt_uuid *replicaset_uuid,
 		         struct tt_uuid *instance_uuid, struct vclock *vclock,
-			 uint32_t *replica_version_id)
+			 uint32_t *replica_version_id, bool *anonymous)
 {
 	if (xrow_decode_subscribe(row, replicaset_uuid, instance_uuid,
-				  vclock, replica_version_id) != 0)
+				  vclock, replica_version_id, anonymous) != 0)
 		diag_raise();
 }
 
 /** @copydoc xrow_encode_join. */
 static inline void
 xrow_encode_join_xc(struct xrow_header *row,
-		    const struct tt_uuid *instance_uuid)
+		    const struct tt_uuid *instance_uuid, bool anonymous)
 {
-	if (xrow_encode_join(row, instance_uuid) != 0)
+	if (xrow_encode_join(row, instance_uuid, anonymous) != 0)
 		diag_raise();
 }
 
 /** @copydoc xrow_decode_join. */
 static inline void
-xrow_decode_join_xc(struct xrow_header *row, struct tt_uuid *instance_uuid)
+xrow_decode_join_xc(struct xrow_header *row, struct tt_uuid *instance_uuid,
+		    bool *anonymous)
 {
-	if (xrow_decode_join(row, instance_uuid) != 0)
+	if (xrow_decode_join(row, instance_uuid, anonymous) != 0)
 		diag_raise();
 }
 

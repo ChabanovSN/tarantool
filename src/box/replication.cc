@@ -45,6 +45,7 @@
 uint32_t instance_id = REPLICA_ID_NIL;
 struct tt_uuid INSTANCE_UUID;
 struct tt_uuid REPLICASET_UUID;
+bool ANONYMOUS_REPLICA = false;
 
 double replication_timeout = 1.0; /* seconds */
 double replication_connect_timeout = 4.0; /* seconds */
@@ -134,6 +135,7 @@ replica_new(void)
 	replica->applier = NULL;
 	replica->relay = NULL;
 	replica->gc = NULL;
+	replica->anonymous = false;
 	rlist_create(&replica->in_anon);
 	trigger_create(&replica->on_applier_state,
 		       replica_on_applier_state_f, NULL, NULL);
@@ -717,4 +719,19 @@ replica_by_uuid(const struct tt_uuid *uuid)
 	struct replica key;
 	key.uuid = *uuid;
 	return replica_hash_search(&replicaset.hash, &key);
+}
+
+void
+replica_set_anonymous(bool anonymous)
+{
+	if (anonymous && !box_is_ro())
+		tnt_raise(ClientError, ER_CFG, "replication_anon",
+			  "Only read_only replica can be anonymous");
+	ANONYMOUS_REPLICA = anonymous;
+}
+
+bool
+replica_is_anonymous()
+{
+	return ANONYMOUS_REPLICA;
 }

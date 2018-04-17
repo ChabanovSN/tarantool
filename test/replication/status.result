@@ -86,6 +86,10 @@ test_run:cmd("create server replica with rpl_master=default, script='replication
 ---
 - true
 ...
+test_run:cmd("create server replica_anon with rpl_master=default, script='replication/replica_anon.lua'")
+---
+- true
+...
 test_run:cmd("start server replica")
 ---
 - true
@@ -141,6 +145,10 @@ master.upstream == nil
 - true
 ...
 master.downstream == nil
+---
+- true
+...
+master.anonymous == false
 ---
 - true
 ...
@@ -238,6 +246,10 @@ master.downstream == nil
 ---
 - true
 ...
+master.anonymous == false
+---
+- true
+...
 -- replica's status
 replica_id = box.info.id
 ---
@@ -272,6 +284,181 @@ replica.upstream == nil
 - true
 ...
 replica.downstream == nil
+---
+- true
+...
+replica.anonymous == false
+---
+- true
+...
+test_run:cmd('switch default')
+---
+- true
+...
+-- Start anonymous replica
+test_run:cmd("start server replica_anon")
+---
+- true
+...
+#box.info.vclock == 1 -- box.info.vclock[replica_id] is nil
+---
+- true
+...
+#box.info.replication == 3
+---
+- true
+...
+box.space._cluster:count() == 2
+---
+- true
+...
+-- master's status
+box.info.vclock[master_id] == 2 -- grant + registration == 2
+---
+- true
+...
+box.info.lsn == box.info.vclock[master_id]
+---
+- true
+...
+master = box.info.replication[master_id]
+---
+...
+master.id == master_id
+---
+- true
+...
+master.uuid == box.space._cluster:get(master_id)[2]
+---
+- true
+...
+master.lsn == box.info.vclock[master_id]
+---
+- true
+...
+master.upstream == nil
+---
+- true
+...
+master.downstream == nil
+---
+- true
+...
+master.anonymous == false
+---
+- true
+...
+-- anon replica's status
+replica_id = 3
+---
+...
+box.info.vclock[replica_id] == nil
+---
+- true
+...
+replica = box.info.replication[replica_id]
+---
+...
+replica.id == replica_id
+---
+- true
+...
+box.space._cluster:get(replica_id)
+---
+...
+-- replica.lsn == box.info.vclock[replica_id]
+replica.lsn == 0
+---
+- true
+...
+replica.upstream == nil
+---
+- true
+...
+replica.downstream.vclock[master_id] == box.info.vclock[master_id]
+---
+- true
+...
+replica.downstream.vclock[replica_id] == box.info.vclock[replica_id]
+---
+- true
+...
+replica.anonymous == true
+---
+- true
+...
+test_run:cmd('switch replica_anon')
+---
+- true
+...
+#box.info.vclock == 1 -- box.info.vclock[replica_id] is nil
+---
+- true
+...
+#box.info.replication == 2
+---
+- true
+...
+box.space._cluster:count() == 2
+---
+- true
+...
+-- master's status
+master_id = test_run:get_server_id('default')
+---
+...
+box.info.vclock[master_id] == 2
+---
+- true
+...
+master = box.info.replication[master_id]
+---
+...
+master.id == master_id
+---
+- true
+...
+master.uuid == box.space._cluster:get(master_id)[2]
+---
+- true
+...
+master.upstream.status == "follow"
+---
+- true
+...
+master.upstream.lag < 1
+---
+- true
+...
+master.upstream.idle < 1
+---
+- true
+...
+master.upstream.peer:match("localhost")
+---
+- localhost
+...
+master.downstream == nil
+---
+- true
+...
+master.anonymous == false
+---
+- true
+...
+replica_id = box.info.id
+---
+...
+box.info.vclock[replica_id] == nil
+---
+- true
+...
+box.info.lsn == 0
+---
+- false
+...
+-- there is no information about itself on anon replica
+box.info.replication[replica_id] == nil
 ---
 - true
 ...
@@ -387,7 +574,15 @@ test_run:cmd("stop server replica")
 ---
 - true
 ...
+test_run:cmd("stop server replica_anon")
+---
+- true
+...
 test_run:cmd("cleanup server replica")
+---
+- true
+...
+test_run:cmd("cleanup server replica_anon")
 ---
 - true
 ...
