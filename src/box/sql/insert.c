@@ -1645,6 +1645,9 @@ xferCompatibleIndex(Index * pDest, Index * pSrc)
 	assert(pDest->pTable != pSrc->pTable);
 	uint32_t nDestCol = index_column_count(pDest);
 	uint32_t nSrcCol = index_column_count(pSrc);
+	/* One of them is PK while the other isn't */
+	if ((pDest->idxType == 2 && pSrc->idxType != 2)
+	    || (pDest->idxType != 2 && pSrc->idxType == 2))
 	if (nDestCol != nSrcCol) {
 		return 0;	/* Different number of columns */
 	}
@@ -1711,16 +1714,21 @@ xferOptimization(Parse * pParse,	/* Parser context */
 	ExprList *pEList;	/* The result set of the SELECT */
 	Table *pSrc;		/* The table in the FROM clause of SELECT */
 	Index *pSrcIdx, *pDestIdx;	/* Source and destination indices */
+	/* Source and destination indices */
+	struct index *src_idx, *dest_idx;
 	struct SrcList_item *pItem;	/* An element of pSelect->pSrc */
 	int i;			/* Loop counter */
 	int iSrc, iDest;	/* Cursors from source and destination */
 	int addr1;		/* Loop addresses */
 	int emptyDestTest = 0;	/* Address of test for empty pDest */
 	int emptySrcTest = 0;	/* Address of test for empty pSrc */
+	/* Number of memory cell for cursors */
+	int space_ptr_reg;
 	Vdbe *v;		/* The VDBE we are building */
-	int destHasUniqueIdx = 0;	/* True if pDest has a UNIQUE index */
 	int regData, regTupleid;	/* Registers holding data and tupleid */
 	struct session *user_session = current_session();
+	/* Space pointer for pDest and pSrc */
+	struct space *space;
 
 	if (pSelect == NULL)
 		return 0;	/* Must be of the form  INSERT INTO ... SELECT ... */
@@ -1830,9 +1838,6 @@ xferOptimization(Parse * pParse,	/* Parser context */
 		}
 	}
 	for (pDestIdx = pDest->pIndex; pDestIdx; pDestIdx = pDestIdx->pNext) {
-		if (index_is_unique(pDestIdx)) {
-			destHasUniqueIdx = 1;
-		}
 		for (pSrcIdx = pSrc->pIndex; pSrcIdx; pSrcIdx = pSrcIdx->pNext) {
 			if (xferCompatibleIndex(pDestIdx, pSrcIdx))
 				break;
@@ -1875,58 +1880,51 @@ xferOptimization(Parse * pParse,	/* Parser context */
 	regData = sqlite3GetTempReg(pParse);
 	regTupleid = sqlite3GetTempReg(pParse);
 	sqlite3OpenTable(pParse, iDest, pDest, OP_OpenWrite);
-	assert(destHasUniqueIdx);
-	if ((pDest->iPKey < 0 && pDest->pIndex != 0)	/* (1) */
-	    ||destHasUniqueIdx	/* (2) */
-	    || (onError != ON_CONFLICT_ACTION_ABORT
-		&& onError != ON_CONFLICT_ACTION_ROLLBACK)	/* (3) */
-	    ) {
-		/* In some circumstances, we are able to run the xfer optimization
-		 * only if the destination table is initially empty.
-		 * This block generates code to make
-		 * that determination.
-		 *
-		 * Conditions under which the destination must be empty:
-		 *
-		 * (1) There is no INTEGER PRIMARY KEY but there are indices.
-		 *
-		 * (2) The destination has a unique index.  (The xfer optimization
-		 *     is unable to test uniqueness.)
-		 *
-		 * (3) onError is something other than ON_CONFLICT_ACTION_ABORT and _ROLLBACK.
-		 */
-		addr1 = sqlite3VdbeAddOp2(v, OP_Rewind, iDest, 0);
-		VdbeCoverage(v);
-		emptyDestTest = sqlite3VdbeAddOp0(v, OP_Goto);
-		sqlite3VdbeJumpHere(v, addr1);
-	}
 
-	for (pDestIdx = pDest->pIndex; pDestIdx; pDestIdx = pDestIdx->pNext) {
-		for (pSrcIdx = pSrc->pIndex; ALWAYS(pSrcIdx);
-		     pSrcIdx = pSrcIdx->pNext) {
-			if (xferCompatibleIndex(pDestIdx, pSrcIdx))
-				break;
-		}
-		assert(pSrcIdx);
-		emit_open_cursor(pParse, iSrc, pSrcIdx->tnum);
-		sqlite3VdbeSetP4KeyInfo(pParse, pSrcIdx);
-		VdbeComment((v, "%s", pSrcIdx->zName));
-		emit_open_cursor(pParse, iDest, pDestIdx->tnum);
-		sqlite3VdbeSetP4KeyInfo(pParse, pDestIdx);
-		sqlite3VdbeChangeP5(v, OPFLAG_BULKCSR);
-		VdbeComment((v, "%s", pDestIdx->zName));
-		addr1 = sqlite3VdbeAddOp2(v, OP_Rewind, iSrc, 0);
-		VdbeCoverage(v);
-		sqlite3VdbeAddOp2(v, OP_RowData, iSrc, regData);
-		sqlite3VdbeAddOp2(v, OP_IdxInsert, iDest, regData);
-		if (pDestIdx->idxType == SQLITE_IDXTYPE_PRIMARYKEY)
-			sqlite3VdbeChangeP5(v, OPFLAG_NCHANGE);
-		sqlite3VdbeAddOp2(v, OP_Next, iSrc, addr1 + 1);
-		VdbeCoverage(v);
-		sqlite3VdbeJumpHere(v, addr1);
-		sqlite3VdbeAddOp2(v, OP_Close, iSrc, 0);
-		sqlite3VdbeAddOp2(v, OP_Close, iDest, 0);
-	}
+	/* The xfer optimization is unable to test
+	 * uniqueness while we have a unique
+	 * PRIMARY KEY in any existing table.
+	 * This is the reason we can only run it
+	 * if the destination table is initially empty.
+	 * This block generates code to make
+	 * that determination.
+	 */
+	addr1 = sqlite3VdbeAddOp2(v, OP_Rewind, iDest, 0);
+	VdbeCoverage(v);
+	emptyDestTest = sqlite3VdbeAddOp0(v, OP_Goto);
+	sqlite3VdbeJumpHere(v, addr1);
+
+	pDestIdx = sqlite3PrimaryKeyIndex(pDest);
+	pSrcIdx = sqlite3PrimaryKeyIndex(pSrc);
+	space = space_by_id(SQLITE_PAGENO_TO_SPACEID(pSrc->tnum));
+	if((src_idx = space_index(space, 0 /* PK */)) == NULL)
+		return 0;
+	space_ptr_reg = ++pParse->nMem;
+	sqlite3VdbeAddOp4Ptr(v, OP_LoadPtr, 0, space_ptr_reg, 0,
+			     (void *) space);
+	sqlite3VdbeAddOp3(v, OP_OpenWrite, iSrc,
+			  pSrc->tnum, space_ptr_reg);
+	VdbeComment((v, "%s", src_idx->def->name));
+	space = space_by_id(SQLITE_PAGENO_TO_SPACEID(pDest->tnum));
+	if((dest_idx = space_index(space, 0 /* PK */)) == NULL)
+		return 0;
+	space_ptr_reg = ++pParse->nMem;
+	sqlite3VdbeAddOp4Ptr(v, OP_LoadPtr, 0, space_ptr_reg, 0,
+			     (void *) space);
+	sqlite3VdbeAddOp3(v, OP_OpenWrite, iDest,
+			  pSrc->tnum, space_ptr_reg);
+	sqlite3VdbeChangeP5(v, OPFLAG_BULKCSR);
+	VdbeComment((v, "%s", dest_idx->def->name));
+	addr1 = sqlite3VdbeAddOp2(v, OP_Rewind, iSrc, 0);
+	VdbeCoverage(v);
+	sqlite3VdbeAddOp2(v, OP_RowData, iSrc, regData);
+	sqlite3VdbeAddOp2(v, OP_IdxInsert, iDest, regData);
+	sqlite3VdbeChangeP5(v, OPFLAG_NCHANGE);
+	sqlite3VdbeAddOp2(v, OP_Next, iSrc, addr1 + 1);
+	VdbeCoverage(v);
+	sqlite3VdbeJumpHere(v, addr1);
+	sqlite3VdbeAddOp2(v, OP_Close, iSrc, 0);
+	sqlite3VdbeAddOp2(v, OP_Close, iDest, 0);
 	if (emptySrcTest)
 		sqlite3VdbeJumpHere(v, emptySrcTest);
 	sqlite3ReleaseTempReg(pParse, regTupleid);
