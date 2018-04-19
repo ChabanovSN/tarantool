@@ -1433,7 +1433,7 @@ int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf)
 	struct SqliteIndex *pk_idx = sqlite3PrimaryKeyIndex(pTable);
 	int pk_forced_int = -1;
 	char *base = buf, *p;
-	int i, n = pTable->nCol;
+	int i, n = pTable->def->field_count;
 
 	p = enc->encode_array(base, n);
 
@@ -1449,15 +1449,15 @@ int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf)
 		const char *t;
 		struct coll *coll = aCol[i].coll;
 		struct field_def *field = &pTable->def->fields[i];
-		struct Expr *def = field->default_value_expr;
+		const char *zToken = field->default_value;
 		int base_len = 4;
 		if (coll != NULL)
 			base_len += 1;
-		if (def != NULL)
+		if (zToken != NULL)
 			base_len += 1;
 		p = enc->encode_map(p, base_len);
 		p = enc->encode_str(p, "name", 4);
-		p = enc->encode_str(p, aCol[i].zName, strlen(aCol[i].zName));
+		p = enc->encode_str(p, field->name, strlen(field->name));
 		p = enc->encode_str(p, "type", 4);
 		if (i == pk_forced_int) {
 			t = "integer";
@@ -1477,11 +1477,9 @@ int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf)
 			p = enc->encode_str(p, "collation", strlen("collation"));
 			p = enc->encode_uint(p, coll->id);
 		}
-		if (def != NULL) {
-		        assert((def->flags & EP_IntValue) == 0);
-			assert(def->u.zToken != NULL);
-			p = enc->encode_str(p, "default", strlen("default"));
-			p = enc->encode_str(p, def->u.zToken, strlen(def->u.zToken));
+		if (zToken != NULL) {
+		        p = enc->encode_str(p, "default", strlen("default"));
+			p = enc->encode_str(p, zToken, strlen(zToken));
 		}
 	}
 	return (int)(p - base);
@@ -1680,4 +1678,49 @@ space_column_default_expr(uint32_t space_id, uint32_t fieldno)
 	assert(space->def->field_count > fieldno);
 
 	return space->def->fields[fieldno].default_value_expr;
+}
+
+Table *
+sql_ephemeral_table_new(Parse *parser)
+{
+	sqlite3 *db = parser->db;
+	struct space_def *def = NULL;
+	Table *table = sqlite3DbMallocZero(db, sizeof(Table));
+	if (table != NULL) {
+		def = space_def_new(0, 0, 0, NULL, 0, NULL, 0,
+				    &space_opts_default, NULL, 0);
+	}
+	if (def == NULL) {
+		sqlite3DbFree(db, table);
+		parser->rc = SQLITE_NOMEM_BKPT;
+		parser->nErr++;
+		return NULL;
+	}
+	table->def = def;
+	return table;
+}
+
+int
+sql_table_def_rebuild(struct sqlite3 *db, struct Table *pTable)
+{
+	struct space_def *old_def = pTable->def;
+	struct space_def *new_def = NULL;
+	new_def = space_def_new(old_def->id, old_def->uid,
+				old_def->field_count, old_def->name,
+				strlen(old_def->name), old_def->engine_name,
+				strlen(old_def->engine_name), &old_def->opts,
+				old_def->fields, old_def->field_count);
+	if (new_def == NULL) {
+		sqlite3OomFault(db);
+		return -1;
+	}
+	struct field_def *fields = old_def->fields;
+	for (uint32_t i = 0; i < old_def->field_count; ++i) {
+		sqlite3DbFree(db, fields[i].default_value);
+		sqlite3DbFree(db, fields[i].name);
+	}
+	space_def_delete(old_def);
+	sqlite3DbFree(db, fields);
+	pTable->def = new_def;
+	return 0;
 }

@@ -70,11 +70,12 @@ space_def_sizeof(uint32_t name_len, const struct field_def *fields,
 	for (uint32_t i = 0; i < field_count; ++i) {
 		field_strs_size += strlen(fields[i].name) + 1;
 		if (fields[i].default_value != NULL) {
-			assert(fields[i].default_value_expr != NULL);
 			int len = strlen(fields[i].default_value);
 			field_strs_size += len + 1;
-			struct Expr *e = fields[i].default_value_expr;
-			def_exprs_size += sql_expr_sizeof(e, 0);
+			if (fields[i].default_value_expr != NULL) {
+				struct Expr *e = fields[i].default_value_expr;
+				def_exprs_size += sql_expr_sizeof(e, 0);
+			}
 		}
 	}
 
@@ -116,12 +117,13 @@ space_def_dup(const struct space_def *src)
 			if (src->fields[i].default_value != NULL) {
 				ret->fields[i].default_value = strs_pos;
 				strs_pos += strlen(strs_pos) + 1;
-
-				struct Expr *e =
-					src->fields[i].default_value_expr;
-				assert(e != NULL);
+			}
+			struct Expr *e =
+				src->fields[i].default_value_expr;
+			if (e != NULL) {
 				char *expr_pos_old = expr_pos;
-				e = sql_expr_dup(sql_get(), e, 0, &expr_pos);
+				e = sql_expr_dup(sql_get(), e, 0,
+						 &expr_pos);
 				assert(e != NULL);
 				/* Note: due to SQL legacy
 				 * duplicactor pointer is not
@@ -201,12 +203,13 @@ space_def_new(uint32_t id, uint32_t uid, uint32_t exact_field_count,
 				       fields[i].default_value, len);
 				def->fields[i].default_value[len] = 0;
 				strs_pos += len + 1;
-
-				struct Expr *e =
-					fields[i].default_value_expr;
-				assert(e != NULL);
+			}
+			struct Expr *e =
+				fields[i].default_value_expr;
+			if (e != NULL) {
 				char *expr_pos_old = expr_pos;
-				e = sql_expr_dup(sql_get(), e, 0, &expr_pos);
+				e = sql_expr_dup(sql_get(), e, 0,
+						 &expr_pos);
 				assert(e != NULL);
 				/* Note: due to SQL legacy
 				 * duplicactor pointer is

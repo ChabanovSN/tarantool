@@ -382,7 +382,7 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 		 * there is no PK for it, so columns should be loaded manually.
 		 */
 		if (isView) {
-			nPk = pTab->nCol;
+			nPk = pTab->def->field_count;
 			iPk = pParse->nMem + 1;
 			pParse->nMem += nPk;
 			iEphCur = pParse->nTab++;
@@ -734,13 +734,13 @@ sqlite3GenerateRowDelete(Parse * pParse,	/* Parsing context */
 					  onconf);
 		mask |= sqlite3FkOldmask(pParse, pTab);
 		iOld = pParse->nMem + 1;
-		pParse->nMem += (1 + pTab->nCol);
+		pParse->nMem += (1 + pTab->def->field_count);
 
 		/* Populate the OLD.* pseudo-table register array. These values will be
 		 * used by any BEFORE and AFTER triggers that exist.
 		 */
 		sqlite3VdbeAddOp2(v, OP_Copy, iPk, iOld);
-		for (iCol = 0; iCol < pTab->nCol; iCol++) {
+		for (iCol = 0; iCol < (int)pTab->def->field_count; iCol++) {
 			testcase(mask != 0xffffffff && iCol == 31);
 			testcase(mask != 0xffffffff && iCol == 32);
 			if (mask == 0xffffffff

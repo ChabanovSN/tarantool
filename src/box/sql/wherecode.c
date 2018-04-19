@@ -50,7 +50,7 @@ explainIndexColumnName(Index * pIdx, int i)
 	i = pIdx->aiColumn[i];
 	if (i == XN_EXPR)
 		return "<expr>";
-	return pIdx->pTable->aCol[i].zName;
+	return pIdx->pTable->def->fields[i].name;
 }
 
 /*

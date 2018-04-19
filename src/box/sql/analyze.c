@@ -1023,9 +1023,10 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		regKeyStat = sqlite3GetTempRange(pParse, nPkColumn);
 		for (j = 0; j < nPkColumn; j++) {
 			k = pPk->aiColumn[j];
-			assert(k >= 0 && k < pTab->nCol);
+			assert(k >= 0 && k < (int)pTab->def->field_count);
 			sqlite3VdbeAddOp3(v, OP_Column, iIdxCur, k, regKeyStat + j);
-			VdbeComment((v, "%s", pTab->aCol[pPk->aiColumn[j]].zName));
+			VdbeComment((v, "%s",
+				    pTab->def->fields[pPk->aiColumn[j]].name));
 		}
 		sqlite3VdbeAddOp3(v, OP_MakeRecord, regKeyStat,
 				  nPkColumn, regKey);

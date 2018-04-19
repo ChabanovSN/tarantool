@@ -1867,7 +1867,6 @@ struct Savepoint {
  * of this structure.
  */
 struct Column {
-	char *zName;		/* Name of this column */
 	enum field_type type;	/* Column type. */
 	/** Collating sequence. */
 	struct coll *coll;
@@ -1950,7 +1949,6 @@ struct Table {
 	i16 iPKey;		/* If not negative, use aCol[iPKey] as the rowid */
 	i16 iAutoIncPKey;	/* If PK is marked INTEGER PRIMARY KEY AUTOINCREMENT, store
 				   column number here, -1 otherwise Tarantool specifics */
-	i16 nCol;		/* Number of columns in this table */
 	LogEst nRowLogEst;	/* Estimated rows in table - from _sql_stat1 table */
 	LogEst szTabRow;	/* Estimated size of each table row in bytes */
 #ifdef SQLITE_ENABLE_COSTMULT
@@ -3515,7 +3513,7 @@ void sqlite3ResetAllSchemasOfConnection(sqlite3 *);
 void sqlite3CommitInternalChanges();
 void sqlite3DeleteColumnNames(sqlite3 *, Table *);
 bool table_column_is_in_pk(Table *, uint32_t);
-int sqlite3ColumnsFromExprList(Parse *, ExprList *, i16 *, Column **);
+int sqlite3ColumnsFromExprList(Parse *, ExprList *, Table *);
 void sqlite3SelectAddColumnTypeAndCollation(Parse *, Table *, Select *);
 Table *sqlite3ResultSetOfSelect(Parse *, Select *);
 Index *sqlite3PrimaryKeyIndex(Table *);

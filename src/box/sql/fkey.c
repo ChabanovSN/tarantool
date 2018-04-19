@@ -243,7 +243,7 @@ sqlite3FkLocateIndex(Parse * pParse,	/* Parse context to store any error in */
 			if (!zKey)
 				return 0;
 			if (!strcmp
-			    (pParent->aCol[pParent->iPKey].zName, zKey))
+			    (pParent->def->fields[pParent->iPKey].name, zKey))
 				return 0;
 		}
 	} else if (paiCol) {
@@ -305,7 +305,7 @@ sqlite3FkLocateIndex(Parse * pParse,	/* Parse context to store any error in */
 					if (def_coll != coll)
 						break;
 
-					zIdxCol = pParent->aCol[iCol].zName;
+					zIdxCol = pParent->def->fields[iCol].name;
 					for (j = 0; j < nCol; j++) {
 						if (strcmp
 						    (pFKey->aCol[j].zCol,
@@ -650,7 +650,7 @@ fkScanChildren(Parse * pParse,	/* Parse context */
 		pLeft = exprTableRegister(pParse, pTab, regData, iCol);
 		iCol = aiCol ? aiCol[i] : pFKey->aCol[0].iFrom;
 		assert(iCol >= 0);
-		zCol = pFKey->pFrom->aCol[iCol].zName;
+		zCol = pFKey->pFrom->def->fields[iCol].name;
 		pRight = sqlite3Expr(db, TK_ID, zCol);
 		pEq = sqlite3PExpr(pParse, TK_EQ, pLeft, pRight);
 		pWhere = sqlite3ExprAnd(db, pWhere, pEq);
@@ -863,12 +863,12 @@ fkParentIsModified(Table * pTab, FKey * p, int *aChange)
 	for (i = 0; i < p->nCol; i++) {
 		char *zKey = p->aCol[i].zCol;
 		int iKey;
-		for (iKey = 0; iKey < pTab->nCol; iKey++) {
+		for (iKey = 0; iKey < (int)pTab->def->field_count; iKey++) {
 			if (aChange[iKey] >= 0) {
-				Column *pCol = &pTab->aCol[iKey];
 				if (zKey) {
 					if (0 ==
-					    strcmp(pCol->zName, zKey))
+					    strcmp(pTab->def->fields[iKey].name,
+						   zKey))
 						return 1;
 				} else if (table_column_is_in_pk(pTab, iKey)) {
 					return 1;
@@ -1282,14 +1282,14 @@ fkActionTrigger(Parse * pParse,	/* Parse context */
 			assert(iFromCol >= 0);
 			assert(pIdx != 0
 			       || (pTab->iPKey >= 0
-				   && pTab->iPKey < pTab->nCol));
+				   && pTab->iPKey < (int)pTab->def->field_count));
 			assert(pIdx == 0 || pIdx->aiColumn[i] >= 0);
 			sqlite3TokenInit(&tToCol,
-					 pTab->aCol[pIdx ? pIdx->
+					 pTab->def->fields[pIdx ? pIdx->
 						    aiColumn[i] : pTab->iPKey].
-					 zName);
+					 name);
 			sqlite3TokenInit(&tFromCol,
-					 pFKey->pFrom->aCol[iFromCol].zName);
+					 pFKey->pFrom->def->fields[iFromCol].name);
 
 			/* Create the expression "OLD.zToCol = zFromCol". It is important
 			 * that the "OLD.zToCol" term is on the LHS of the = operator, so

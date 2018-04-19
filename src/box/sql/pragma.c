@@ -359,7 +359,8 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 				Index *pPk = sqlite3PrimaryKeyIndex(pTab);
 				pParse->nMem = 6;
 				sqlite3ViewGetColumnNames(pParse, pTab);
-				for (i = 0, pCol = pTab->aCol; i < pTab->nCol;
+				for (i = 0, pCol = pTab->aCol;
+				     i < (int)pTab->def->field_count;
 				     i++, pCol++) {
 					if (!table_column_is_in_pk(pTab, i)) {
 						k = 0;
@@ -367,7 +368,7 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 						k = 1;
 					} else {
 						for (k = 1;
-						     k <= pTab->nCol
+						     k <= (int)pTab->def->field_count
 						     && pPk->aiColumn[k - 1] !=
 						     i; k++) {
 						}
@@ -381,7 +382,9 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 					char *expr_str = space->
 						def->fields[i].default_value;
 					sqlite3VdbeMultiLoad(v, 1, "issisi",
-							     i, pCol->zName,
+							     i,
+							     pTab->def->fields[i].
+								     name,
 							     field_type_strs[
 							     sqlite3ColumnType
 							     (pCol)],
@@ -453,8 +456,9 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 								     0 ? 0 :
 								     pIdx->
 								     pTable->
-								     aCol[cnum].
-								     zName);
+								     def->
+								     fields[cnum].
+								     name);
 						if (pPragma->iArg) {
 							const char *c_n;
 							struct coll *coll;
@@ -559,7 +563,7 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 		while (pFK) {
 			for (int j = 0; j < pFK->nCol; j++) {
 				const char *name =
-					pTab->aCol[pFK->aCol[j].iFrom].zName;
+					pTab->def->fields[pFK->aCol[j].iFrom].name;
 				sqlite3VdbeMultiLoad(v, 1, "iissssss", i, j,
 						     pFK->zTo, name,
 						     pFK->aCol[j].zCol,
@@ -614,8 +618,9 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 				}
 				if (pTab == 0 || pTab->pFKey == 0)
 					continue;
-				if (pTab->nCol + regRow > pParse->nMem)
-					pParse->nMem = pTab->nCol + regRow;
+				if ((int)pTab->def->field_count + regRow > pParse->nMem)
+					pParse->nMem =
+						pTab->def->field_count + regRow;
 				sqlite3OpenTable(pParse, 0, pTab, OP_OpenRead);
 				sqlite3VdbeLoadString(v, regResult,
 						      pTab->zName);
@@ -677,7 +682,8 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 					if (pParent && pIdx == 0) {
 						int iKey = pFK->aCol[0].iFrom;
 						assert(iKey >= 0
-						       && iKey < pTab->nCol);
+						       && iKey <
+						       (int)pTab->def->field_count);
 						if (iKey != pTab->iPKey) {
 							sqlite3VdbeAddOp3(v,
 									  OP_Column,

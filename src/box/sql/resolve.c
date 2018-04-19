@@ -240,7 +240,7 @@ lookupName(Parse * pParse,	/* The parsing context */
 			     i++, pItem++) {
 				pTab = pItem->pTab;
 				assert(pTab != 0 && pTab->zName != 0);
-				assert(pTab->nCol > 0);
+				assert(pTab->def->field_count > 0);
 				if (pItem->pSelect
 				    && (pItem->pSelect->
 					selFlags & SF_NestedFrom) != 0) {
@@ -272,9 +272,10 @@ lookupName(Parse * pParse,	/* The parsing context */
 				if (0 == (cntTab++)) {
 					pMatch = pItem;
 				}
-				for (j = 0, pCol = pTab->aCol; j < pTab->nCol;
+				for (j = 0, pCol = pTab->aCol;
+				     j < (int)pTab->def->field_count;
 				     j++, pCol++) {
-					if (strcmp(pCol->zName, zCol) ==
+					if (strcmp(pTab->def->fields[j].name, zCol) ==
 					    0) {
 						/* If there has been exactly one prior match and this match
 						 * is for the right-hand table of a NATURAL JOIN or is in a
@@ -332,16 +333,17 @@ lookupName(Parse * pParse,	/* The parsing context */
 				int iCol;
 				cntTab++;
 				for (iCol = 0, pCol = pTab->aCol;
-				     iCol < pTab->nCol; iCol++, pCol++) {
-					if (strcmp(pCol->zName, zCol) ==
-					    0) {
+				     iCol < (int)pTab->def->field_count;
+				     iCol++, pCol++) {
+					if (strcmp(pTab->def->fields[iCol].name,
+						   zCol) == 0) {
 						if (iCol == pTab->iPKey) {
 							iCol = -1;
 						}
 						break;
 					}
 				}
-				if (iCol < pTab->nCol) {
+				if (iCol < (int)pTab->def->field_count) {
 					cnt++;
 					if (iCol < 0) {
 						pExpr->affinity =

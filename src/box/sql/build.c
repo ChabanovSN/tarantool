@@ -291,15 +291,8 @@ sqlite3CommitInternalChanges()
 void
 sqlite3DeleteColumnNames(sqlite3 * db, Table * pTable)
 {
-	int i;
-	Column *pCol;
 	assert(pTable != 0);
-	if ((pCol = pTable->aCol) != 0) {
-		for (i = 0; i < pTable->nCol; i++, pCol++) {
-			sqlite3DbFree(db, pCol->zName);
-		}
-		sqlite3DbFree(db, pTable->aCol);
-	}
+	sqlite3DbFree(db, pTable->aCol);
 }
 
 /*
@@ -393,12 +386,8 @@ deleteTable(sqlite3 * db, Table * pTable)
 	sqlite3DbFree(db, pTable->zColAff);
 	sqlite3SelectDelete(db, pTable->pSelect);
 	sqlite3ExprListDelete(db, pTable->pCheck);
-	if (pTable->def != NULL) {
-		/* Fields has been allocated independently. */
-		struct field_def *fields = pTable->def->fields;
+	if (pTable->def != NULL)
 		space_def_delete(pTable->def);
-		sqlite3DbFree(db, fields);
-	}
 	sqlite3DbFree(db, pTable);
 
 	/* Verify that no lookaside memory was used by schema tables */
@@ -496,28 +485,16 @@ sqlite3PrimaryKeyIndex(Table * pTab)
  * Create and initialize a new SQL Table object.
  * @param parser SQL Parser object.
  * @param name Table to create name.
- * @retval NULL on memory allocation error, Parser state is
- *         changed.
+ * @retval NULL on memory allocation error.
  * @retval not NULL on success.
  */
 static Table *
 sql_table_new(Parse *parser, char *name)
 {
 	sqlite3 *db = parser->db;
-
-	Table *table = sqlite3DbMallocZero(db, sizeof(Table));
-	struct space_def *def = space_def_new(0, 0, 0, NULL, 0, NULL, 0,
-					      &space_opts_default, NULL, 0);
-	if (table == NULL || def == NULL) {
-		if (def != NULL)
-			space_def_delete(def);
-		sqlite3DbFree(db, table);
-		parser->rc = SQLITE_NOMEM_BKPT;
-		parser->nErr++;
+	struct Table *table = sql_ephemeral_table_new(parser);
+	if (table == NULL)
 		return NULL;
-	}
-
-	table->def = def;
 	table->zName = name;
 	table->iPKey = -1;
 	table->iAutoIncPKey = -1;
@@ -629,7 +606,6 @@ sql_field_retrieve(Parse *parser, Table *table, uint32_t id)
 	sqlite3 *db = parser->db;
 	struct field_def *field;
 	assert(table->def != NULL);
-	assert(table->def->exact_field_count >= (uint32_t)table->nCol);
 	assert(id < SQLITE_MAX_COLUMN);
 
 	if (id >= table->def->exact_field_count) {
@@ -676,12 +652,12 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 	if ((p = pParse->pNewTable) == 0)
 		return;
 #if SQLITE_MAX_COLUMN
-	if (p->nCol + 1 > db->aLimit[SQLITE_LIMIT_COLUMN]) {
+	if ((int)p->def->field_count + 1 > db->aLimit[SQLITE_LIMIT_COLUMN]) {
 		sqlite3ErrorMsg(pParse, "too many columns on %s", p->zName);
 		return;
 	}
 #endif
-	if (sql_field_retrieve(pParse, p, (uint32_t) p->nCol) == NULL)
+	if (sql_field_retrieve(pParse, p, (uint32_t) p->def->field_count) == NULL)
 		return;
 	z = sqlite3DbMallocRaw(db, pName->n + 1);
 	if (z == 0)
@@ -689,28 +665,27 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 	memcpy(z, pName->z, pName->n);
 	z[pName->n] = 0;
 	sqlite3NormalizeName(z);
-	for (i = 0; i < p->nCol; i++) {
-		if (strcmp(z, p->aCol[i].zName) == 0) {
+	for (i = 0; i < (int)p->def->field_count; i++) {
+		if (strcmp(z, p->def->fields[i].name) == 0) {
 			sqlite3ErrorMsg(pParse, "duplicate column name: %s", z);
 			sqlite3DbFree(db, z);
 			return;
 		}
 	}
-	if ((p->nCol & 0x7) == 0) {
+	if ((p->def->field_count & 0x7) == 0) {
 		Column *aNew;
 		aNew =
 		    sqlite3DbRealloc(db, p->aCol,
-				     (p->nCol + 8) * sizeof(p->aCol[0]));
+				     (p->def->field_count + 8) * sizeof(p->aCol[0]));
 		if (aNew == 0) {
 			sqlite3DbFree(db, z);
 			return;
 		}
 		p->aCol = aNew;
 	}
-	pCol = &p->aCol[p->nCol];
+	pCol = &p->aCol[p->def->field_count];
 	memset(pCol, 0, sizeof(p->aCol[0]));
-	pCol->zName = z;
-
+	p->def->fields[p->def->field_count].name = z;
 	if (pType->n == 0) {
 		/* If there is no type specified, columns have the default affinity
 		 * 'BLOB' and type SCALAR.
@@ -740,7 +715,6 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 			sqlite3_free(zType);
 		}
 	}
-	p->nCol++;
 	p->def->field_count++;
 	pParse->constraintName.n = 0;
 }
@@ -756,9 +730,9 @@ sqlite3AddNotNull(Parse * pParse, int onError)
 {
 	Table *p;
 	p = pParse->pNewTable;
-	if (p == 0 || NEVER(p->nCol < 1))
+	if (p == 0 || NEVER(p->def->field_count < 1))
 		return;
-	p->aCol[p->nCol - 1].notNull = (u8) onError;
+	p->aCol[p->def->field_count - 1].notNull = (u8) onError;
 }
 
 /*
@@ -871,38 +845,26 @@ void
 sqlite3AddDefaultValue(Parse * pParse, ExprSpan * pSpan)
 {
 	Table *p;
-	Column *pCol;
 	sqlite3 *db = pParse->db;
 	p = pParse->pNewTable;
 	if (p != 0) {
-		pCol = &(p->aCol[p->nCol - 1]);
 		if (!sqlite3ExprIsConstantOrFunction
 		    (pSpan->pExpr, db->init.busy)) {
 			sqlite3ErrorMsg(pParse,
 					"default value of column [%s] is not constant",
-					pCol->zName);
+					p->def->fields[p->def->field_count - 1].name);
 		} else {
-			/* A copy of pExpr is used instead of the original, as pExpr contains
-			 * tokens that point to volatile memory. The 'span' of the expression
-			 * is required by pragma table_info.
-			 */
-			Expr x;
-			assert(p->def != NULL);
 			struct field_def *field =
-				&p->def->fields[p->nCol - 1];
-			sql_expr_free(db, field->default_value_expr, false);
-
-			memset(&x, 0, sizeof(x));
-			x.op = TK_SPAN;
-			x.u.zToken = sqlite3DbStrNDup(db, (char *)pSpan->zStart,
-						      (int)(pSpan->zEnd -
-							    pSpan->zStart));
-			x.pLeft = pSpan->pExpr;
-			x.flags = EP_Skip;
-
-			field->default_value_expr =
-				sqlite3ExprDup(db, &x, EXPRDUP_REDUCE);
-			sqlite3DbFree(db, x.u.zToken);
+				&p->def->fields[p->def->field_count - 1];
+			field->default_value =
+				sqlite3DbStrNDup(db,
+						 (char *)pSpan->zStart,
+						 (int)(pSpan->zEnd - pSpan->zStart));
+			if (field->default_value == NULL) {
+				pParse->rc = SQLITE_NOMEM_BKPT;
+				pParse->nErr++;
+				return;
+			}
 		}
 	}
 	sql_expr_free(db, pSpan->pExpr, false);
@@ -947,7 +909,7 @@ sqlite3AddPrimaryKey(Parse * pParse,	/* Parsing context */
 	}
 	pTab->tabFlags |= TF_HasPrimaryKey;
 	if (pList == 0) {
-		iCol = pTab->nCol - 1;
+		iCol = pTab->def->field_count - 1;
 		pCol = &pTab->aCol[iCol];
 		pCol->is_primkey = 1;
 		nTerm = 1;
@@ -962,10 +924,10 @@ sqlite3AddPrimaryKey(Parse * pParse,	/* Parsing context */
 				goto primary_key_exit;
 			}
 			const char *zCName = pCExpr->u.zToken;
-			for (iCol = 0; iCol < pTab->nCol; iCol++) {
+			for (iCol = 0; iCol < (int)pTab->def->field_count; iCol++) {
 				if (strcmp
 				    (zCName,
-				     pTab->aCol[iCol].zName) == 0) {
+				     pTab->def->fields[iCol].name) == 0) {
 					pCol = &pTab->aCol[iCol];
 					pCol->is_primkey = 1;
 					break;
@@ -1036,7 +998,7 @@ sqlite3AddCollateType(Parse * pParse, Token * pToken)
 
 	if ((p = pParse->pNewTable) == 0)
 		return;
-	i = p->nCol - 1;
+	i = p->def->field_count - 1;
 	db = pParse->db;
 	zColl = sqlite3NameFromToken(db, pToken);
 	if (!zColl)
@@ -1087,7 +1049,7 @@ sql_column_collation(Table *table, uint32_t column)
 	 * SQL specific structures.
 	 */
 	if (space == NULL || space_index(space, 0) == NULL) {
-		assert(column < (uint32_t)table->nCol);
+		assert(column < (uint32_t)table->def->field_count);
 		return table->aCol[column].coll;
 	}
 
@@ -1306,9 +1268,8 @@ createTableStmt(sqlite3 * db, Table * p)
 	char *zSep, *zSep2, *zEnd;
 	Column *pCol;
 	n = 0;
-	for (pCol = p->aCol, i = 0; i < p->nCol; i++, pCol++) {
-		n += identLength(pCol->zName) + 5;
-	}
+	for (i = 0; i < (int)p->def->field_count; i++)
+		n += identLength(p->def->fields[i].name) + 5;
 	n += identLength(p->zName);
 	if (n < 50) {
 		zSep = "";
@@ -1319,7 +1280,7 @@ createTableStmt(sqlite3 * db, Table * p)
 		zSep2 = ",\n  ";
 		zEnd = "\n)";
 	}
-	n += 35 + 6 * p->nCol;
+	n += 35 + 6 * p->def->field_count;
 	zStmt = sqlite3DbMallocRaw(0, n);
 	if (zStmt == 0) {
 		sqlite3OomFault(db);
@@ -1329,7 +1290,7 @@ createTableStmt(sqlite3 * db, Table * p)
 	k = sqlite3Strlen30(zStmt);
 	identPut(zStmt, &k, p->zName);
 	zStmt[k++] = '(';
-	for (pCol = p->aCol, i = 0; i < p->nCol; i++, pCol++) {
+	for (pCol = p->aCol, i = 0; i < (int)p->def->field_count; i++, pCol++) {
 		static const char *const azType[] = {
 			/* SQLITE_AFF_BLOB    */ "",
 			/* SQLITE_AFF_TEXT    */ " TEXT",
@@ -1343,7 +1304,7 @@ createTableStmt(sqlite3 * db, Table * p)
 		sqlite3_snprintf(n - k, &zStmt[k], zSep);
 		k += sqlite3Strlen30(&zStmt[k]);
 		zSep = zSep2;
-		identPut(zStmt, &k, pCol->zName);
+		identPut(zStmt, &k, p->def->fields[i].name);
 		assert(pCol->affinity - SQLITE_AFF_BLOB >= 0);
 		assert(pCol->affinity - SQLITE_AFF_BLOB < ArraySize(azType));
 		testcase(pCol->affinity == SQLITE_AFF_BLOB);
@@ -1373,7 +1334,8 @@ estimateTableWidth(Table * pTab)
 	unsigned wTable = 0;
 	const Column *pTabCol;
 	int i;
-	for (i = pTab->nCol, pTabCol = pTab->aCol; i > 0; i--, pTabCol++) {
+	for (i = pTab->def->field_count,
+		     pTabCol = pTab->aCol; i > 0; i--, pTabCol++) {
 		wTable += pTabCol->szEst;
 	}
 	if (pTab->iPKey < 0)
@@ -1392,7 +1354,7 @@ estimateIndexWidth(Index * pIdx)
 	const Column *aCol = pIdx->pTable->aCol;
 	for (i = 0; i < pIdx->nColumn; i++) {
 		i16 x = pIdx->aiColumn[i];
-		assert(x < pIdx->pTable->nCol);
+		assert(x < (int)pIdx->pTable->def->field_count);
 		wIndex += x < 0 ? 1 : aCol[pIdx->aiColumn[i]].szEst;
 	}
 	pIdx->szIdxRow = sqlite3LogEst(wIndex * 4);
@@ -1433,7 +1395,7 @@ convertToWithoutRowidTable(Parse * pParse, Table * pTab)
 	/* Mark every PRIMARY KEY column as NOT NULL (except for imposter tables)
 	 */
 	if (!db->init.imposterTable) {
-		for (i = 0; i < pTab->nCol; i++) {
+		for (i = 0; i < (int)pTab->def->field_count; i++) {
 			if (pTab->aCol[i].is_primkey) {
 				pTab->aCol[i].notNull = ON_CONFLICT_ACTION_ABORT;
 			}
@@ -1446,7 +1408,7 @@ convertToWithoutRowidTable(Parse * pParse, Table * pTab)
 	if (pTab->iPKey >= 0) {
 		ExprList *pList;
 		Token ipkToken;
-		sqlite3TokenInit(&ipkToken, pTab->aCol[pTab->iPKey].zName);
+		sqlite3TokenInit(&ipkToken, pTab->def->fields[pTab->iPKey].name);
 		pList = sqlite3ExprListAppend(pParse, 0,
 					      sqlite3ExprAlloc(db, TK_ID,
 							       &ipkToken, 0));
@@ -1663,7 +1625,7 @@ createSpace(Parse * pParse, int iSpaceId, char *zStmt)
 			  sqlite3DbStrDup(pParse->db, p->zName), P4_DYNAMIC);
 	sqlite3VdbeAddOp4(v, OP_String8, 0, iFirstCol + 3 /* engine */ , 0,
 			  "memtx", P4_STATIC);
-	sqlite3VdbeAddOp2(v, OP_Integer, p->nCol,
+	sqlite3VdbeAddOp2(v, OP_Integer, p->def->field_count,
 			  iFirstCol + 4 /* field_count */ );
 	sqlite3VdbeAddOp4(v, OP_Blob, zOptsSz, iFirstCol + 5, MSGPACK_SUBTYPE,
 			  zOpts, P4_DYNAMIC);
@@ -1852,6 +1814,8 @@ sqlite3EndTable(Parse * pParse,	/* Parse context */
 	assert(!db->mallocFailed);
 	p = pParse->pNewTable;
 	if (p == 0)
+		return;
+	if (sql_table_def_rebuild(db, p) != 0)
 		return;
 
 	assert(!db->init.busy || !pSelect);
@@ -2101,7 +2065,7 @@ sqlite3ViewGetColumnNames(Parse * pParse, Table * pTable)
 	/* A positive nCol means the columns names for this view are
 	 * already known.
 	 */
-	if (pTable->nCol > 0)
+	if (pTable->def->field_count > 0)
 		return 0;
 
 	/* A negative nCol is a special marker meaning that we are currently
@@ -2119,12 +2083,12 @@ sqlite3ViewGetColumnNames(Parse * pParse, Table * pTable)
 	 *     CREATE TEMP VIEW ex1 AS SELECT a FROM ex1;
 	 *     SELECT * FROM temp.ex1;
 	 */
-	if (pTable->nCol < 0) {
+	if ((int)pTable->def->field_count < 0) {
 		sqlite3ErrorMsg(pParse, "view %s is circularly defined",
 				pTable->zName);
 		return 1;
 	}
-	assert(pTable->nCol >= 0);
+	assert((int)pTable->def->field_count >= 0);
 
 	/* If we get this far, it means we need to compute the table names.
 	 * Note that the call to sqlite3ResultSetOfSelect() will expand any
@@ -2138,7 +2102,7 @@ sqlite3ViewGetColumnNames(Parse * pParse, Table * pTable)
 	if (pSel) {
 		n = pParse->nTab;
 		sqlite3SrcListAssignCursors(pParse, pSel->pSrc);
-		pTable->nCol = -1;
+		pTable->def->field_count = -1;
 		db->lookaside.bDisable++;
 		pSelTab = sqlite3ResultSetOfSelect(pParse, pSel);
 		pParse->nTab = n;
@@ -2149,11 +2113,9 @@ sqlite3ViewGetColumnNames(Parse * pParse, Table * pTable)
 			 * normally holds CHECK constraints on an ordinary table, but for
 			 * a VIEW it holds the list of column names.
 			 */
-			sqlite3ColumnsFromExprList(pParse, pTable->pCheck,
-						   &pTable->nCol,
-						   &pTable->aCol);
+			sqlite3ColumnsFromExprList(pParse, pTable->pCheck, pTable);
 			if (db->mallocFailed == 0 && pParse->nErr == 0
-			    && pTable->nCol == pSel->pEList->nExpr) {
+			    && (int)pTable->def->field_count == pSel->pEList->nExpr) {
 				sqlite3SelectAddColumnTypeAndCollation(pParse,
 								       pTable,
 								       pSel);
@@ -2163,12 +2125,15 @@ sqlite3ViewGetColumnNames(Parse * pParse, Table * pTable)
 			 * the column names from the SELECT statement that defines the view.
 			 */
 			assert(pTable->aCol == 0);
-			pTable->nCol = pSelTab->nCol;
+			assert((int)pTable->def->field_count == -1);
+			struct space_def *def = pSelTab->def;
+			pSelTab->def = pTable->def;
+			pSelTab->def->field_count = 0;
+			pTable->def = def;
 			pTable->aCol = pSelTab->aCol;
-			pSelTab->nCol = 0;
 			pSelTab->aCol = 0;
 		} else {
-			pTable->nCol = 0;
+			pTable->def->field_count = 0;
 			nErr++;
 		}
 		sqlite3DeleteTable(db, pSelTab);
@@ -2195,8 +2160,18 @@ sqliteViewResetAll(sqlite3 * db)
 		Table *pTab = sqliteHashData(i);
 		if (pTab->pSelect) {
 			sqlite3DeleteColumnNames(db, pTab);
+			struct space_def *old_def = pTab->def;
+			pTab->def = space_def_new(old_def->id, old_def->uid,
+						  0,
+						  old_def->name,
+						  strlen(old_def->name),
+						  old_def->engine_name,
+						  strlen(old_def->engine_name),
+						  &old_def->opts,
+						  NULL, 0);
+			assert(pTab->def);
+			space_def_delete(old_def);
 			pTab->aCol = 0;
-			pTab->nCol = 0;
 		}
 	}
 }
@@ -2469,13 +2444,13 @@ sqlite3CreateForeignKey(Parse * pParse,	/* Parsing context */
 	if (p == 0)
 		goto fk_end;
 	if (pFromCol == 0) {
-		int iCol = p->nCol - 1;
+		int iCol = p->def->field_count - 1;
 		if (NEVER(iCol < 0))
 			goto fk_end;
 		if (pToCol && pToCol->nExpr != 1) {
 			sqlite3ErrorMsg(pParse, "foreign key on %s"
 					" should reference only one column of table %T",
-					p->aCol[iCol].zName, pTo);
+					p->def->fields[iCol].name, pTo);
 			goto fk_end;
 		}
 		nCol = 1;
@@ -2508,19 +2483,19 @@ sqlite3CreateForeignKey(Parse * pParse,	/* Parsing context */
 	z += pTo->n + 1;
 	pFKey->nCol = nCol;
 	if (pFromCol == 0) {
-		pFKey->aCol[0].iFrom = p->nCol - 1;
+		pFKey->aCol[0].iFrom = p->def->field_count - 1;
 	} else {
 		for (i = 0; i < nCol; i++) {
 			int j;
-			for (j = 0; j < p->nCol; j++) {
+			for (j = 0; j < (int)p->def->field_count; j++) {
 				if (strcmp
-				    (p->aCol[j].zName,
+				    (p->def->fields[j].name,
 				     pFromCol->a[i].zName) == 0) {
 					pFKey->aCol[i].iFrom = j;
 					break;
 				}
 			}
-			if (j >= p->nCol) {
+			if (j >= (int)p->def->field_count) {
 				sqlite3ErrorMsg(pParse,
 						"unknown column \"%s\" in foreign key definition",
 						pFromCol->a[i].zName);
@@ -2966,7 +2941,9 @@ sqlite3CreateIndex(Parse * pParse,	/* All information about this parse */
 	 */
 	if (pList == 0) {
 		Token prevCol;
-		sqlite3TokenInit(&prevCol, pTab->aCol[pTab->nCol - 1].zName);
+		sqlite3TokenInit(&prevCol,
+				 pTab->def->
+					 fields[pTab->def->field_count - 1].name);
 		pList = sqlite3ExprListAppend(pParse, 0,
 					      sqlite3ExprAlloc(db, TK_ID,
 							       &prevCol, 0));
@@ -4018,7 +3995,7 @@ sqlite3UniqueConstraint(Parse * pParse,	/* Parsing context */
 		for (j = 0; j < pIdx->nColumn; j++) {
 			char *zCol;
 			assert(pIdx->aiColumn[j] >= 0);
-			zCol = pTab->aCol[pIdx->aiColumn[j]].zName;
+			zCol = pTab->def->fields[pIdx->aiColumn[j]].name;
 			if (j)
 				sqlite3StrAccumAppend(&errMsg, ", ", 2);
 			sqlite3XPrintf(&errMsg, "%s.%s", pTab->zName, zCol);
@@ -4181,7 +4158,7 @@ sqlite3KeyInfoOfIndex(Parse * pParse, sqlite3 * db, Index * pIdx)
 {
 	int i;
 	int nCol = pIdx->nColumn;
-	int nTableCol = pIdx->pTable->nCol;
+	int nTableCol = pIdx->pTable->def->field_count;
 	KeyInfo *pKey;
 
 	if (pParse && pParse->nErr)

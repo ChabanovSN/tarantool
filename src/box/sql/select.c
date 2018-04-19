@@ -318,9 +318,9 @@ sqlite3JoinType(Parse * pParse, Token * pA, Token * pB, Token * pC)
 static int
 columnIndex(Table * pTab, const char *zCol)
 {
-	int i;
-	for (i = 0; i < pTab->nCol; i++) {
-		if (strcmp(pTab->aCol[i].zName, zCol) == 0)
+	uint32_t i;
+	for (i = 0; i < pTab->def->field_count; i++) {
+		if (strcmp(pTab->def->fields[i].name, zCol) == 0)
 			return i;
 	}
 	return -1;
@@ -492,12 +492,12 @@ sqliteProcessJoin(Parse * pParse, Select * p)
 						"an ON or USING clause", 0);
 				return 1;
 			}
-			for (j = 0; j < pRightTab->nCol; j++) {
+			for (j = 0; j < (int)pRightTab->def->field_count; j++) {
 				char *zName;	/* Name of column in the right table */
 				int iLeft;	/* Matching left table */
 				int iLeftCol;	/* Matching column in the left table */
 
-				zName = pRightTab->aCol[j].zName;
+				zName = pRightTab->def->fields[j].name;
 				if (tableAndColumnIndex
 				    (pSrc, i + 1, zName, &iLeft, &iLeftCol)) {
 					addWhereTerm(pParse, pSrc, iLeft,
@@ -1661,7 +1661,8 @@ columnTypeImpl(NameContext * pNC, Expr * pExpr,
 			} else if (pTab->pSchema) {
 				/* A real table */
 				assert(!pS);
-				assert(iCol >= 0 && iCol < pTab->nCol);
+				assert(iCol >= 0 && iCol <
+						    (int)pTab->def->field_count);
 #ifdef SQLITE_ENABLE_COLUMN_METADATA
 				zOrigCol = pTab->aCol[iCol].zName;
 				zType = sqlite3ColumnType(&pTab->aCol[iCol], 0);
@@ -1754,8 +1755,8 @@ generateColumnNames(Parse * pParse,	/* Parser context */
 			pTab = pTabList->a[j].pTab;
 			if (iCol < 0)
 				iCol = pTab->iPKey;
-			assert(iCol >= 0 && iCol < pTab->nCol);
-			zCol = pTab->aCol[iCol].zName;
+			assert(iCol >= 0 && iCol < (int)pTab->def->field_count);
+			zCol = pTab->def->fields[iCol].name;
 			if (!shortNames && !fullNames) {
 				sqlite3VdbeSetColName(v, i, COLNAME_NAME,
 						      sqlite3DbStrDup(db,
@@ -1799,8 +1800,7 @@ generateColumnNames(Parse * pParse,	/* Parser context */
 int
 sqlite3ColumnsFromExprList(Parse * pParse,	/* Parsing context */
 			   ExprList * pEList,	/* Expr list from which to derive column names */
-			   i16 * pnCol,		/* Write the number of columns here */
-			   Column ** paCol)	/* Write the new column list here */
+			   Table * pTable)	/* Pointer to SQL Table Object*/
 {
 	sqlite3 *db = pParse->db;	/* Database connection */
 	int i, j;		/* Loop counters */
@@ -1822,8 +1822,11 @@ sqlite3ColumnsFromExprList(Parse * pParse,	/* Parsing context */
 		aCol = 0;
 	}
 	assert(nCol == (i16) nCol);
-	*pnCol = nCol;
-	*paCol = aCol;
+	assert(pTable->def->fields == NULL);
+	pTable->def->fields =
+		sqlite3DbMallocZero(db, nCol*sizeof(pTable->def->fields[0]));
+	pTable->def->field_count = (uint32_t)nCol;
+	pTable->aCol = aCol;
 
 	for (i = 0, pCol = aCol; i < nCol && !db->mallocFailed; i++, pCol++) {
 		/* Get an appropriate name for the column
@@ -1845,7 +1848,7 @@ sqlite3ColumnsFromExprList(Parse * pParse,	/* Parsing context */
 				pTab = pColExpr->pTab;
 				if (iCol < 0)
 					iCol = pTab->iPKey;
-				zName = pTab->aCol[iCol].zName;
+				zName = pTab->def->fields[iCol].name;
 			} else if (pColExpr->op == TK_ID) {
 				assert(!ExprHasProperty(pColExpr, EP_IntValue));
 				zName = pColExpr->u.zToken;
@@ -1874,22 +1877,24 @@ sqlite3ColumnsFromExprList(Parse * pParse,	/* Parsing context */
 			if (cnt > 3)
 				sqlite3_randomness(sizeof(cnt), &cnt);
 		}
-		pCol->zName = zName;
+		pTable->def->fields[i].name = zName;
 		if (zName && sqlite3HashInsert(&ht, zName, pCol) == pCol) {
 			sqlite3OomFault(db);
 		}
 	}
 	sqlite3HashClear(&ht);
-	if (db->mallocFailed) {
-		for (j = 0; j < i; j++) {
-			sqlite3DbFree(db, aCol[j].zName);
-		}
+	int rc = db->mallocFailed ? SQLITE_NOMEM_BKPT : SQLITE_OK;
+	if (sql_table_def_rebuild(db, pTable) != 0)
+		rc = SQLITE_NOMEM_BKPT;
+	if (rc != SQLITE_OK) {
 		sqlite3DbFree(db, aCol);
-		*paCol = 0;
-		*pnCol = 0;
-		return SQLITE_NOMEM_BKPT;
+		sqlite3DbFree(db, pTable->def->fields);
+		pTable->def->fields = NULL;
+		pTable->def->field_count = 0;
+		pTable->aCol = 0;
+		rc = SQLITE_NOMEM_BKPT;
 	}
-	return SQLITE_OK;
+	return rc;
 }
 
 /*
@@ -1918,13 +1923,15 @@ sqlite3SelectAddColumnTypeAndCollation(Parse * pParse,		/* Parsing contexts */
 
 	assert(pSelect != 0);
 	assert((pSelect->selFlags & SF_Resolved) != 0);
-	assert(pTab->nCol == pSelect->pEList->nExpr || db->mallocFailed);
+	assert((int)pTab->def->field_count == pSelect->pEList->nExpr
+	       || db->mallocFailed);
 	if (db->mallocFailed)
 		return;
 	memset(&sNC, 0, sizeof(sNC));
 	sNC.pSrcList = pSelect->pSrc;
 	a = pSelect->pEList->a;
-	for (i = 0, pCol = pTab->aCol; i < pTab->nCol; i++, pCol++) {
+	for (i = 0, pCol = pTab->aCol;
+	     i < (int)pTab->def->field_count; i++, pCol++) {
 		enum field_type type;
 		p = a[i].pExpr;
 		type = columnType(&sNC, p, 0, 0, 0, &pCol->szEst);
@@ -1963,10 +1970,9 @@ sqlite3ResultSetOfSelect(Parse * pParse, Select * pSelect)
 	while (pSelect->pPrior)
 		pSelect = pSelect->pPrior;
 	user_session->sql_flags = savedFlags;
-	pTab = sqlite3DbMallocZero(db, sizeof(Table));
-	if (pTab == 0) {
+	pTab = sql_ephemeral_table_new(pParse);
+	if (pTab == NULL)
 		return 0;
-	}
 	/* The sqlite3ResultSetOfSelect() is only used n contexts where lookaside
 	 * is disabled
 	 */
@@ -1975,8 +1981,7 @@ sqlite3ResultSetOfSelect(Parse * pParse, Select * pSelect)
 	pTab->zName = 0;
 	pTab->nRowLogEst = 200;
 	assert(200 == sqlite3LogEst(1048576));
-	sqlite3ColumnsFromExprList(pParse, pSelect->pEList, &pTab->nCol,
-				   &pTab->aCol);
+	sqlite3ColumnsFromExprList(pParse, pSelect->pEList, pTab);
 	sqlite3SelectAddColumnTypeAndCollation(pParse, pTab, pSelect);
 	pTab->iPKey = -1;
 	if (db->mallocFailed) {
@@ -4497,8 +4502,8 @@ withExpand(Walker * pWalker, struct SrcList_item *pFrom)
 			return SQLITE_ERROR;
 
 		assert(pFrom->pTab == 0);
-		pFrom->pTab = pTab = sqlite3DbMallocZero(db, sizeof(Table));
-		if (pTab == 0)
+		pFrom->pTab = pTab = sql_ephemeral_table_new(pParse);
+		if (pTab == NULL)
 			return WRC_Abort;
 		pTab->nTabRef = 1;
 		pTab->zName = sqlite3DbStrDup(db, pCte->zName);
@@ -4562,8 +4567,7 @@ withExpand(Walker * pWalker, struct SrcList_item *pFrom)
 			pEList = pCte->pCols;
 		}
 
-		sqlite3ColumnsFromExprList(pParse, pEList, &pTab->nCol,
-					   &pTab->aCol);
+		sqlite3ColumnsFromExprList(pParse, pEList, pTab);
 		if (bMayRecursive) {
 			if (pSel->selFlags & SF_Recursive) {
 				pCte->zCteErr =
@@ -4684,8 +4688,8 @@ selectExpander(Walker * pWalker, Select * p)
 			if (sqlite3WalkSelect(pWalker, pSel))
 				return WRC_Abort;
 			pFrom->pTab = pTab =
-			    sqlite3DbMallocZero(db, sizeof(Table));
-			if (pTab == 0)
+				sql_ephemeral_table_new(pParse);
+			if (pTab == NULL)
 				return WRC_Abort;
 			pTab->nTabRef = 1;
 			pTab->zName =
@@ -4693,8 +4697,7 @@ selectExpander(Walker * pWalker, Select * p)
 			while (pSel->pPrior) {
 				pSel = pSel->pPrior;
 			}
-			sqlite3ColumnsFromExprList(pParse, pSel->pEList,
-						   &pTab->nCol, &pTab->aCol);
+			sqlite3ColumnsFromExprList(pParse, pSel->pEList, pTab);
 			pTab->iPKey = -1;
 			pTab->nRowLogEst = 200;
 			assert(200 == sqlite3LogEst(1048576));
@@ -4727,10 +4730,10 @@ selectExpander(Walker * pWalker, Select * p)
 				    sqlite3SelectDup(db, pTab->pSelect, 0);
 				sqlite3SelectSetName(pFrom->pSelect,
 						     pTab->zName);
-				nCol = pTab->nCol;
-				pTab->nCol = -1;
+				nCol = pTab->def->field_count;
+				pTab->def->field_count = -1;
 				sqlite3WalkSelect(pWalker, pFrom->pSelect);
-				pTab->nCol = nCol;
+				pTab->def->field_count = nCol;
 			}
 #endif
 		}
@@ -4835,9 +4838,8 @@ selectExpander(Walker * pWalker, Select * p)
 							continue;
 						}
 					}
-					for (j = 0; j < pTab->nCol; j++) {
-						char *zName =
-						    pTab->aCol[j].zName;
+					for (j = 0; j < (int)pTab->def->field_count; j++) {
+						char *zName = pTab->def->fields[j].name;
 						char *zColname;	/* The computed column name */
 						char *zToFree;	/* Malloced string that needs to be freed */
 						Token sColname;	/* Computed column name as a token */
@@ -5372,10 +5374,10 @@ sqlite3Select(Parse * pParse,		/* The parser context */
 		/* Catch mismatch in the declared columns of a view and the number of
 		 * columns in the SELECT on the RHS
 		 */
-		if (pTab->nCol != pSub->pEList->nExpr) {
+		if ((int)pTab->def->field_count != pSub->pEList->nExpr) {
 			sqlite3ErrorMsg(pParse,
 					"expected %d columns for '%s' but got %d",
-					pTab->nCol, pTab->zName,
+					pTab->def->field_count, pTab->zName,
 					pSub->pEList->nExpr);
 			goto select_end;
 		}

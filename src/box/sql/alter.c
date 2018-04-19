@@ -144,6 +144,9 @@ sqlite3AlterRenameTable(Parse * pParse,	/* Parser context. */
 void
 sqlite3AlterFinishAddColumn(Parse * pParse, Token * pColDef)
 {
+	/* This function is not implemented yet #3075. */
+	assert(false);
+
 	Table *pNew;		/* Copy of pParse->pNewTable */
 	Table *pTab;		/* Table being altered */
 	const char *zTab;	/* Table name */
@@ -161,10 +164,10 @@ sqlite3AlterFinishAddColumn(Parse * pParse, Token * pColDef)
 	assert(pNew);
 
 	zTab = &pNew->zName[16];	/* Skip the "sqlite_altertab_" prefix on the name */
-	pCol = &pNew->aCol[pNew->nCol - 1];
+	pCol = &pNew->aCol[pNew->def->field_count - 1];
 	assert(pNew->def != NULL);
 	pDflt = space_column_default_expr(SQLITE_PAGENO_TO_SPACEID(pNew->tnum),
-					  pNew->nCol - 1);
+					  pNew->def->field_count - 1);
 	pTab = sqlite3HashFind(&db->pSchema->tblHash, zTab);;
 	assert(pTab);
 
@@ -248,10 +251,13 @@ sqlite3AlterFinishAddColumn(Parse * pParse, Token * pColDef)
 void
 sqlite3AlterBeginAddColumn(Parse * pParse, SrcList * pSrc)
 {
+	/* This function is not implemented yet #3075. */
+	assert(false);
+
 	Table *pNew;
 	Table *pTab;
 	Vdbe *v;
-	int i;
+	uint32_t i;
 	int nAlloc;
 	sqlite3 *db = pParse->db;
 
@@ -281,13 +287,17 @@ sqlite3AlterBeginAddColumn(Parse * pParse, SrcList * pSrc)
 	pNew = (Table *) sqlite3DbMallocZero(db, sizeof(Table));
 	if (!pNew)
 		goto exit_begin_add_column;
+	pNew->def = space_def_dup(pTab->def);
+	if (pNew->def == NULL) {
+		sqlite3DbFree(db, pNew);
+		goto exit_begin_add_column;
+	}
 	pParse->pNewTable = pNew;
 	pNew->nTabRef = 1;
-	pNew->nCol = pTab->nCol;
-	assert(pNew->nCol > 0);
-	nAlloc = (((pNew->nCol - 1) / 8) * 8) + 8;
-	assert(nAlloc >= pNew->nCol && nAlloc % 8 == 0
-	       && nAlloc - pNew->nCol < 8);
+	assert(pNew->def->field_count > 0);
+	nAlloc = (((pNew->def->field_count - 1) / 8) * 8) + 8;
+	assert((uint32_t)nAlloc >= pNew->def->field_count && nAlloc % 8 == 0
+	       && nAlloc - pNew->def->field_count < 8);
 	pNew->aCol =
 	    (Column *) sqlite3DbMallocZero(db, sizeof(Column) * nAlloc);
 	pNew->zName = sqlite3MPrintf(db, "sqlite_altertab_%s", pTab->zName);
@@ -295,10 +305,10 @@ sqlite3AlterBeginAddColumn(Parse * pParse, SrcList * pSrc)
 		assert(db->mallocFailed);
 		goto exit_begin_add_column;
 	}
-	memcpy(pNew->aCol, pTab->aCol, sizeof(Column) * pNew->nCol);
-	for (i = 0; i < pNew->nCol; i++) {
+	memcpy(pNew->aCol, pTab->aCol, sizeof(Column) * pNew->def->field_count);
+	for (i = 0; i < pNew->def->field_count; i++) {
 		Column *pCol = &pNew->aCol[i];
-		pCol->zName = sqlite3DbStrDup(db, pCol->zName);
+		/* FIXME: pCol->zName = sqlite3DbStrDup(db, pCol->zName); */
 		pCol->coll = NULL;
 	}
 	pNew->pSchema = db->pSchema;

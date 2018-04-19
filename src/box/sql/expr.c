@@ -48,7 +48,7 @@ static int exprCodeVector(Parse * pParse, Expr * p, int *piToFree);
 char
 sqlite3TableColumnAffinity(Table * pTab, int iCol)
 {
-	assert(iCol < pTab->nCol);
+	assert(iCol < (int)pTab->def->field_count);
 	return iCol >= 0 ? pTab->aCol[iCol].affinity : SQLITE_AFF_INTEGER;
 }
 
@@ -4242,20 +4242,21 @@ sqlite3ExprCodeTarget(Parse * pParse, Expr * pExpr, int target)
 			 */
 			Table *pTab = pExpr->pTab;
 			int p1 =
-			    pExpr->iTable * (pTab->nCol + 1) + 1 +
+			    pExpr->iTable * (pTab->def->field_count + 1) + 1 +
 			    pExpr->iColumn;
 
 			assert(pExpr->iTable == 0 || pExpr->iTable == 1);
 			assert(pExpr->iColumn >= 0
-			       && pExpr->iColumn < pTab->nCol);
+			       && pExpr->iColumn < (int)pTab->def->field_count);
 			assert(pTab->iPKey < 0
 			       || pExpr->iColumn != pTab->iPKey);
-			assert(p1 >= 0 && p1 < (pTab->nCol * 2 + 2));
+			assert(p1 >= 0 && p1 <
+					  ((int)pTab->def->field_count * 2 + 2));
 
 			sqlite3VdbeAddOp2(v, OP_Param, p1, target);
 			VdbeComment((v, "%s.%s -> $%d",
 				    (pExpr->iTable ? "new" : "old"),
-				    pExpr->pTab->aCol[pExpr->iColumn].zName,
+				    pExpr->pTab->def->fields[pExpr->iColumn].name,
 				    target));
 
 #ifndef SQLITE_OMIT_FLOATING_POINT

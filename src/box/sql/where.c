@@ -716,7 +716,7 @@ constructAutomaticIndex(Parse * pParse,			/* The parsing context */
 				sqlite3_log(SQLITE_WARNING_AUTOINDEX,
 					    "automatic index on %s(%s)",
 					    pTable->zName,
-					    pTable->aCol[iCol].zName);
+					    pTable->def->fields[iCol].name);
 				sentWarning = 1;
 			}
 			if ((idxCols & cMask) == 0) {
@@ -4514,9 +4514,9 @@ sqlite3WhereBegin(Parse * pParse,	/* The parser context */
 			sqlite3OpenTable(pParse, pTabItem->iCursor, pTab, op);
 			assert(pTabItem->iCursor == pLevel->iTabCur);
 			testcase(pWInfo->eOnePass == ONEPASS_OFF
-				 && pTab->nCol == BMS - 1);
+				 && pTab->def->field_count == BMS - 1);
 			testcase(pWInfo->eOnePass == ONEPASS_OFF
-				 && pTab->nCol == BMS);
+				 && pTab->def->field_count == BMS);
 #ifdef SQLITE_ENABLE_CURSOR_HINTS
 			if (pLoop->pIndex != 0) {
 				sqlite3VdbeChangeP5(v,
