@@ -47,6 +47,7 @@ const struct index_opts index_opts_default = {
 	/* .bloom_fpr           = */ 0.05,
 	/* .lsn                 = */ 0,
 	/* .sql                 = */ NULL,
+	/* .stat                = */ NULL,
 };
 
 const struct opt_def index_opts_reg[] = {
@@ -117,6 +118,8 @@ index_def_new(uint32_t space_id, uint32_t iid, const char *name,
 			return NULL;
 		}
 	}
+	/* Statistics are initialized separately. */
+	assert(opts->stat == NULL);
 	return def;
 }
 
@@ -154,7 +157,96 @@ index_def_dup(const struct index_def *def)
 			return NULL;
 		}
 	}
+	if (def->opts.stat != NULL) {
+		dup->opts.stat = malloc(sizeof(*dup->opts.stat));
+		if (dup->opts.stat == NULL) {
+			diag_set(OutOfMemory, sizeof(*dup->opts.stat), "malloc",
+				 "dup->opts.stat");
+			index_def_delete(dup);
+			return NULL;
+		}
+		dup->opts.stat->is_unordered = def->opts.stat->is_unordered;
+		dup->opts.stat->skip_scan_enabled =
+			def->opts.stat->skip_scan_enabled;
+		size_t stat_size = (def->key_def->part_count + 1) *
+				    sizeof(uint32_t);
+		dup->opts.stat->tuple_stat1 = malloc(stat_size);
+		if (dup->opts.stat->tuple_stat1 == NULL) {
+			diag_set(OutOfMemory, stat_size, "malloc",
+				 "tuple_stat1");
+			index_def_delete(dup);
+			return NULL;
+		}
+		memcpy(dup->opts.stat->tuple_stat1, def->opts.stat->tuple_stat1,
+		       stat_size);
+		dup->opts.stat->tuple_log_est = malloc(stat_size);
+		if (dup->opts.stat->tuple_log_est == NULL) {
+			diag_set(OutOfMemory, stat_size, "malloc",
+				 "tuple_log_est");
+			index_def_delete(dup);
+			return NULL;
+		}
+		memcpy(dup->opts.stat->tuple_log_est,
+		       def->opts.stat->tuple_log_est, stat_size);
+		uint32_t sample_count = def->opts.stat->sample_count;
+		dup->opts.stat->sample_count = sample_count;
+		dup->opts.stat->sample_field_count =
+			def->opts.stat->sample_field_count;
+		if (def->opts.stat->samples == NULL) {
+			dup->opts.stat->samples = NULL;
+			dup->opts.stat->avg_eq = NULL;
+			return dup;
+		}
+		size_t samples_alloc_size =
+			/* Array of samples. */
+			sample_count * sizeof(def->opts.stat->samples[0]) +
+			/* Arrays eq, lt, dlt for each sample. */
+			def->opts.stat->sample_count * sizeof(uint32_t) *
+			def->opts.stat->sample_field_count * 3 +
+			/* Array of avg_eq. */
+			(def->key_def->part_count * sizeof(uint32_t));
+		dup->opts.stat->samples = malloc(samples_alloc_size);
+		if (dup->opts.stat->samples == NULL) {
+			diag_set(OutOfMemory, samples_alloc_size, "malloc",
+				 "samples");
+			index_def_delete(dup);
+			return NULL;
+		}
+		memcpy(dup->opts.stat->samples, def->opts.stat->samples,
+		       samples_alloc_size);
+		for (uint32_t i = 0; i < def->opts.stat->sample_count; ++i) {
+			size_t key_size = def->opts.stat->samples[i].key_size;
+			/*
+			 * Add at the end two zero-bytes in order
+			 * to prevent buffer overread.
+			 */
+			dup->opts.stat->samples[i].sample_key =
+				calloc(1, key_size + 2);
+			if (dup->opts.stat->samples[i].sample_key == NULL) {
+				diag_set(OutOfMemory, key_size + 2, "calloc",
+					 "sample_key");
+				index_def_delete(dup);
+				return NULL;
+			}
+			memcpy(dup->opts.stat->samples[i].sample_key,
+			       def->opts.stat->samples[i].sample_key, key_size);
+		}
+	}
 	return dup;
+}
+
+void
+index_stat_destroy_samples(struct index_stat *stat)
+{
+	if (stat != NULL && stat->samples != NULL) {
+		for (uint32_t i = 0; i < stat->sample_count; ++i) {
+			struct index_sample *sample = &stat->samples[i];
+			free(sample->sample_key);
+		}
+		free(stat->samples);
+		stat->sample_count = 0;
+		stat->samples = NULL;
+	}
 }
 
 /** Free a key definition. */

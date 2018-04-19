@@ -1473,7 +1473,6 @@ typedef struct FuncDef FuncDef;
 typedef struct FuncDefHash FuncDefHash;
 typedef struct IdList IdList;
 typedef struct Index Index;
-typedef struct IndexSample IndexSample;
 typedef struct KeyClass KeyClass;
 typedef struct KeyInfo KeyInfo;
 typedef struct Lookaside Lookaside;
@@ -1695,7 +1694,6 @@ struct sqlite3 {
 #define SQLITE_SubqCoroutine  0x0100	/* Evaluate subqueries as coroutines */
 #define SQLITE_Transitive     0x0200	/* Transitive constraints */
 #define SQLITE_OmitNoopJoin   0x0400	/* Omit unused tables in joins */
-#define SQLITE_Stat4          0x0800	/* Use STAT4 data */
 #define SQLITE_CursorHints    0x2000	/* Add OP_CursorHint opcodes */
 #define SQLITE_AllOpts        0xffff	/* All optimizations */
 
@@ -2173,14 +2171,41 @@ struct Index {
 				 * or _NONE
 				 */
 	unsigned idxType:2;	/* 1==UNIQUE, 2==PRIMARY KEY, 0==CREATE INDEX */
-	unsigned bUnordered:1;	/* Use this index for == or IN queries only */
-	unsigned noSkipScan:1;	/* Do not try to use skip-scan if true */
-	int nSample;		/* Number of elements in aSample[] */
-	int nSampleCol;		/* Size of IndexSample.anEq[] and so on */
-	tRowcnt *aAvgEq;	/* Average nEq values for keys not in aSample */
-	IndexSample *aSample;	/* Samples of the left-most key */
-	tRowcnt *aiRowEst;	/* Non-logarithmic stat1 data for this index */
 };
+/**
+ * default_tuple_est[] array contains default information
+ * which is used when we don't have real space, e.g. temporary
+ * objects representing result set of nested SELECT or VIEW.
+ *
+ * First number is supposed to contain the number of elements
+ * in the index. Since we do not know, guess 1 million.
+ * Second one is an estimate of the number of rows in the
+ * table that match any particular value of the first column of
+ * the index. Third one is an estimate of the number of
+ * rows that match any particular combination of the first 2
+ * columns of the index. And so on. It must always be true:
+ *
+ *           default_tuple_est[N] <= default_tuple_est[N-1]
+ *           default_tuple_est[N] >= 1
+ *
+ * Apart from that, we have little to go on besides intuition
+ * as to how default values should be initialized. The numbers
+ * generated here are based on typical values found in actual
+ * indices.
+ */
+extern const log_est default_tuple_est[];
+
+/**
+ * Fetch statistics concerning tuples to be selected.
+ * If there is no appropriate Tarantool's index,
+ * return one of default values.
+ *
+ * @param idx Index.
+ * @param field Number of field to be examined.
+ * @retval Estimate logarithm of tuples selected by given field.
+ */
+log_est
+index_field_tuple_est(struct Index *idx, uint32_t field);
 
 /*
  * Allowed values for Index.idxType
@@ -2200,19 +2225,6 @@ struct Index {
  * there are some negative values that have special meaning:
  */
 #define XN_EXPR      (-2)	/* Indexed column is an expression */
-
-/*
- * Each sample stored in the sql_stat4 table is represented in memory
- * using a structure of this type.  See documentation at the top of the
- * analyze.c source file for additional information.
- */
-struct IndexSample {
-	void *p;		/* Pointer to sampled record */
-	int n;			/* Size of record in bytes */
-	tRowcnt *anEq;		/* Est. number of rows where the key equals this sample */
-	tRowcnt *anLt;		/* Est. number of rows where key is less than this sample */
-	tRowcnt *anDLt;		/* Est. number of distinct keys less than this sample */
-};
 
 #ifdef DEFAULT_TUPLE_COUNT
 #undef DEFAULT_TUPLE_COUNT
@@ -3946,9 +3958,19 @@ ssize_t
 sql_index_tuple_size(struct space *space, struct index *idx);
 
 int sqlite3InvokeBusyHandler(BusyHandler *);
-int sqlite3AnalysisLoad(sqlite3 *);
-void sqlite3DeleteIndexSamples(sqlite3 *, Index *);
-void sqlite3DefaultRowEst(Index *);
+
+/**
+ * Load the content of the _sql_stat1 and sql_stat4 tables. The
+ * contents of _sql_stat1 are used to populate the tuple_stat1[]
+ * arrays. The contents of sql_stat4 are used to populate the
+ * samples[] arrays.
+ *
+ * @param db Database handler.
+ * @retval SQLITE_OK on success, smth else otherwise.
+ */
+int
+sql_analysis_load(struct sqlite3 *db);
+
 uint32_t
 index_column_count(const Index *);
 bool
