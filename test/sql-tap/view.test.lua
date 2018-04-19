@@ -1,6 +1,6 @@
 #!/usr/bin/env tarantool
 test = require("sqltester")
-test:plan(65)
+test:plan(66)
 
 --!./tcltestrunner.lua
 -- 2002 February 26
@@ -917,6 +917,16 @@ if (0 > 0)
         })
 
 end
+
+test:do_catchsql_test(
+    "view-14.1-1",
+    [[
+        CREATE VIEW one AS SELECT * FROM two;
+        CREATE VIEW two AS SELECT * FROM one;
+        SELECT * FROM one;
+    ]],
+    {1, "view ONE is circularly defined"})
+
 -- Tickets #1688 #1709
 test:do_execsql2_test(
     "view-15.1",
