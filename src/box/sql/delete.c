@@ -33,8 +33,10 @@
  * This file contains C code routines that are called by the parser
  * in order to generate code for DELETE FROM statements.
  */
+#include "../../box/session.h"
+#include "../../box/schema.h"
 #include "sqliteInt.h"
-#include "box/session.h"
+#include "tarantoolInt.h"
 
 /*
  * While a SrcList can in general represent multiple tables and subqueries
@@ -96,34 +98,27 @@ sqlite3IsReadOnly(Parse * pParse, Table * pTab, int viewOk)
 }
 
 #if !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER)
-/*
- * Evaluate a view and store its result in an ephemeral table.  The
- * pWhere argument is an optional WHERE clause that restricts the
- * set of rows in the view that are to be added to the ephemeral table.
- */
 void
-sqlite3MaterializeView(Parse * pParse,	/* Parsing context */
-		       Table * pView,	/* View definition */
-		       Expr * pWhere,	/* Optional WHERE clause to be added */
-		       int iCur)	/* Cursor number for ephemeral table */
+sql_materialize_view(struct Parse *parse, const char *name,
+		     struct Expr *where, int cursor)
 {
-	SelectDest dest;
-	Select *pSel;
-	SrcList *pFrom;
-	sqlite3 *db = pParse->db;
-	pWhere = sqlite3ExprDup(db, pWhere, 0);
-	pFrom = sqlite3SrcListAppend(db, 0, 0);
-	if (pFrom) {
-		assert(pFrom->nSrc == 1);
-		pFrom->a[0].zName = sqlite3DbStrDup(db, pView->zName);
-		assert(pFrom->a[0].pOn == 0);
-		assert(pFrom->a[0].pUsing == 0);
+	struct SelectDest dest;
+	struct Select *select;
+	struct SrcList *from;
+	struct sqlite3 *db = parse->db;
+	where = sqlite3ExprDup(db, where, 0);
+	from = sqlite3SrcListAppend(db, 0, 0);
+	if (from != NULL) {
+		assert(from->nSrc == 1);
+		from->a[0].zName = sqlite3DbStrDup(db, name);
+		assert(from->a[0].pOn == 0);
+		assert(from->a[0].pUsing == 0);
 	}
-	pSel = sqlite3SelectNew(pParse, 0, pFrom, pWhere, 0, 0, 0,
-				0, 0, 0);
-	sqlite3SelectDestInit(&dest, SRT_EphemTab, iCur);
-	sqlite3Select(pParse, pSel, &dest);
-	sqlite3SelectDelete(db, pSel);
+	select = sqlite3SelectNew(parse, NULL, from, where, NULL, NULL,
+				  NULL, 0, NULL, NULL);
+	sqlite3SelectDestInit(&dest, SRT_EphemTab, cursor);
+	sqlite3Select(parse, select, &dest);
+	sqlite3SelectDelete(db, select);
 }
 #endif				/* !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER) */
 
@@ -278,6 +273,9 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	if (pTab == 0)
 		goto delete_from_cleanup;
 
+	int space_id = SQLITE_PAGENO_TO_SPACEID(pTab->tnum);
+	struct space *space = space_cache_find(space_id);
+
 	/* Figure out if we have any triggers and if the table being
 	 * deleted from is a view
 	 */
@@ -328,7 +326,8 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	 */
 #if !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER)
 	if (isView) {
-		sqlite3MaterializeView(pParse, pTab, pWhere, iTabCur);
+		sql_materialize_view(pParse, space_name(space),
+				     pWhere, iTabCur);
 		iDataCur = iIdxCur = iTabCur;
 	}
 #endif
@@ -570,71 +569,6 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	sql_expr_free(db, pWhere, false);
 	sqlite3DbFree(db, aToOpen);
 	return;
-}
-
-/* Generate VDBE code for
- * DELETE FROM <pTab.z> WHERE
- *        <columns[0]> = <values[0]>
- *    AND  ...
- *    AND <columns[nPairs - 1]> = <values[nPairs - 1]>;
- *
- * This function does not increment the nested counter and is
- * faster than nested parsing of the request above.
- * @param pParse Parser context.
- * @param pTab Table name.
- * @param columns Column names array.
- * @param values Column values array.
- * @param nPairs Length of @columns and @values.
- *
- * In case of error the @values elements are deleted.
- */
-void
-sqlite3DeleteByKey(Parse *pParse, char *zTab, const char **columns,
-		   Expr **values, int nPairs)
-{
-	Expr *where = NULL;
-	SrcList *src;
-
-		assert(nPairs > 0);
-	if (pParse->nErr > 0 || pParse->db->mallocFailed)
-		goto error;
-	src = sql_alloc_src_list(pParse->db);
-	src->a[0].zName = sqlite3DbStrDup(pParse->db, zTab);
-	if (src == NULL)
-		goto error;
-	/* Dummy init of INDEXED BY clause. */
-	Token t = { NULL, 0, false };
-	sqlite3SrcListIndexedBy(pParse, src, &t);
-
-	for (int i = 0; i < nPairs; ++i) {
-		Expr *col_expr = sqlite3Expr(pParse->db, TK_ID, columns[i]);
-		if (col_expr == NULL || values[i] == NULL)
-			goto error;
-		Expr *eq_expr =
-		    sqlite3PExpr(pParse, TK_EQ, col_expr, values[i]);
-		/* In case of error the values[i] had been deleted in
-		 * sqlite3PExpr already. Do not delete it second time in the
-		 * cycle below.
-		 */
-		values[i] = NULL;
-		if (eq_expr == NULL)
-			goto error;
-		if (i == 0) {
-			where = eq_expr;
-		} else {
-			where = sqlite3ExprAnd(pParse->db, where, eq_expr);
-			if (where == NULL)
-				goto error;
-		}
-	}
-	/* DeleteFrom frees the src and exprs in case of error. */
-	sqlite3DeleteFrom(pParse, src, where);
-	return;
-
- error:
-	sql_expr_free(pParse->db, where, false);
-	for (int i = 0; i < nPairs; ++i)
-		sql_expr_free(pParse->db, values[i], false);
 }
 
 /* Make sure "isView" and other macros defined above are undefined. Otherwise

@@ -315,7 +315,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	 */
 #if !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER)
 	if (isView) {
-		sqlite3MaterializeView(pParse, pTab, pWhere, iDataCur);
+		sql_materialize_view(pParse, pTab->zName, pWhere, iDataCur);
 		/* Number of columns from SELECT plus ID.*/
 		nKey = pTab->nCol + 1;
 	}

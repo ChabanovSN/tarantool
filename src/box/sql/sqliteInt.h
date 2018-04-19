@@ -3723,6 +3723,20 @@ int sqlite3SafetyCheckSickOrOk(sqlite3 *);
 void sqlite3ChangeCookie(Parse *);
 
 #if !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER)
+/**
+ * Evaluate a view and store its result in an ephemeral table.  The
+ * pWhere argument is an optional WHERE clause that restricts the
+ * set of rows in the view that are to be added to the ephemeral table.
+ *
+ * @param parse Parsing context.
+ * @param name View name.
+ * @param where Optional WHERE clause to be added.
+ * @param cursor Cursor number for ephemeral table.
+ */
+void
+sql_materialize_view(struct Parse *parse, const char *name,
+		     struct Expr *where, int cursor);
+
 void sqlite3MaterializeView(Parse *, Table *, Expr *, int);
 #endif
 
@@ -3846,6 +3860,17 @@ struct coll *sqlite3LocateCollSeq(Parse * pParse, sqlite3 * db, const char *zNam
  */
 struct coll *
 sql_expr_coll(Parse * pParse, Expr * pExpr, bool *is_found);
+
+/**
+ * Free memory occupied by an expression.
+ *
+ * @param db SQL handle.
+ * @param expr Expression to deallocate.
+ * @param extern_alloc Flag set if memory for child nodes was allocated
+          simultaneously w/ root expression.
+ */
+void
+sql_expr_free(struct sqlite3 *db, struct Expr *expr, bool extern_alloc);
 
 Expr *sqlite3ExprAddCollateToken(Parse * pParse, Expr *, const Token *, int);
 Expr *sqlite3ExprAddCollateString(Parse *, Expr *, const char *);
