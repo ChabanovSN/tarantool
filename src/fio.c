@@ -135,7 +135,7 @@ fio_writen(int fd, const void *buf, size_t count)
 }
 
 ssize_t
-fio_writev(int fd, struct iovec *iov, int iovcnt)
+fio_writev(int fd, const struct iovec *iov, int iovcnt)
 {
 	assert(iov && iovcnt >= 0);
 	ssize_t nwr;

@@ -133,7 +133,7 @@ fio_writen(int fd, const void *buf, size_t count);
  *         returns the total number of bytes written, or -1 if error.
  */
 ssize_t
-fio_writev(int fd, struct iovec *iov, int iovcnt);
+fio_writev(int fd, const struct iovec *iov, int iovcnt);
 
 /**
  * A wrapper around writev, but retries for partial writes

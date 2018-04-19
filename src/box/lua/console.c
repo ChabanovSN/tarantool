@@ -31,10 +31,12 @@
 
 #include "box/lua/console.h"
 #include "box/session.h"
+#include "box/port.h"
 #include "lua/utils.h"
 #include "lua/fiber.h"
 #include "fiber.h"
 #include "coio.h"
+#include "fio.h"
 #include "lua-yaml/lyaml.h"
 #include <lua.h>
 #include <lauxlib.h>
@@ -364,6 +366,47 @@ console_session_fd(struct session *session)
 	return session->meta.fd;
 }
 
+int
+console_encode_push(struct lua_State *L)
+{
+	return lua_yaml_encode_tagged(L, luaL_yaml_default, "!push!",
+				      "tag:tarantool.io/push,2018");
+}
+
+/**
+ * Push a tagged YAML document into a console socket.
+ * @param session Console session.
+ * @param port Port with YAML to push.
+ *
+ * @retval  0 Success.
+ * @retval -1 Error.
+ */
+static int
+console_session_push(struct session *session, struct port *port)
+{
+	assert(session_vtab_registry[session->type].push ==
+	       console_session_push);
+	uint32_t text_len;
+	const char *text = port_dump_plain(port, &text_len);
+	if (text == NULL)
+		return -1;
+	int fd = session_fd(session);
+	while (text_len > 0) {
+		while (coio_wait(fd, COIO_WRITE,
+				 TIMEOUT_INFINITY) != COIO_WRITE);
+		const struct iovec iov = {
+			.iov_base = (void *) text,
+			.iov_len = text_len
+		};
+		ssize_t rc = fio_writev(fd, &iov, 1);
+		if (rc < 0)
+			return -1;
+		text_len -= rc;
+		text += rc;
+	}
+	return 0;
+}
+
 void
 tarantool_lua_console_init(struct lua_State *L)
 {
@@ -400,7 +443,7 @@ tarantool_lua_console_init(struct lua_State *L)
 	 */
 	lua_setfield(L, -2, "formatter");
 	struct session_vtab console_session_vtab = {
-		/* .push = */ generic_session_push,
+		/* .push = */ console_session_push,
 		/* .fd = */ console_session_fd,
 		/* .sync = */ generic_session_sync,
 	};
