@@ -68,6 +68,41 @@ enum { IPROTO_MSG_MAX = 768 };
 enum { IPROTO_SALT_SIZE = 32 };
 
 /**
+ * This structure represents a position in the output.
+ * Since we use rotating buffers to recycle memory,
+ * it includes not only a position in obuf, but also
+ * a pointer to obuf the position is for.
+ */
+struct iproto_wpos {
+	struct obuf *obuf;
+	struct obuf_svp svp;
+};
+
+static void
+iproto_wpos_create(struct iproto_wpos *wpos, struct obuf *out)
+{
+	wpos->obuf = out;
+	wpos->svp = obuf_create_svp(out);
+}
+
+/**
+ * Message to notify IProto thread about new data in an output
+ * buffer. Struct iproto_msg is not used here, because push
+ * notification can be much more compact: it does not have
+ * request, ibuf, length, flags ...
+ */
+struct iproto_push_msg {
+	struct cmsg base;
+	/**
+	 * Before sending to IProto thread, the wpos is set to a
+	 * current position in an output buffer. Before IProto
+	 * returns the message to TX, it sets wpos to the last
+	 * flushed position (works like iproto_msg.wpos).
+	 */
+	struct iproto_wpos wpos;
+};
+
+/**
  * Network readahead. A signed integer to avoid
  * automatic type coercion to an unsigned type.
  * We assign it without locks in txn thread and
@@ -109,24 +144,6 @@ iproto_reset_input(struct ibuf *ibuf)
 		ibuf_destroy(ibuf);
 		ibuf_create(ibuf, slabc, iproto_readahead);
 	}
-}
-
-/**
- * This structure represents a position in the output.
- * Since we use rotating buffers to recycle memory,
- * it includes not only a position in obuf, but also
- * a pointer to obuf the position is for.
- */
-struct iproto_wpos {
-	struct obuf *obuf;
-	struct obuf_svp svp;
-};
-
-static void
-iproto_wpos_create(struct iproto_wpos *wpos, struct obuf *out)
-{
-	wpos->obuf = out;
-	wpos->svp = obuf_create_svp(out);
 }
 
 /* {{{ iproto_msg - declaration */
@@ -367,6 +384,37 @@ struct iproto_connection
 		/** Pointer to the current output buffer. */
 		struct obuf *p_obuf;
 	} tx;
+	/**
+	 * Is_push_in_progress is set, when a push_msg is sent to
+	 * IProto thread, and reset, when the message is returned
+	 * to TX. If a new push sees, that a push_msg is already
+	 * sent to IProto, then has_new_pushes is set. After push
+	 * notification is returned to TX, it checks
+	 * has_new_pushes. If it is set, then the notification is
+	 * sent again. This ping-pong continues, until TX stopped
+	 * pushing. It allows to
+	 * 1) avoid multiple push_msg from one session in fly,
+	 * 2) do not block push() until a previous push() is
+	 *    finished.
+	 *
+	 *      IProto                           TX
+	 * -------------------------------------------------------
+	 *                                 + [push message]
+	 *    start socket <--- notification ----
+	 *       write
+	 *                                 + [push message]
+	 *                                 + [push message]
+	 *                                       ...
+	 *      end socket
+	 *        write    ----------------> check for new
+	 *                                   pushes - found
+	 *                 <--- notification ---
+	 *                      ....
+	 */
+	bool has_new_pushes;
+	bool is_push_in_progress;
+	/** Push notification for IProto thread. */
+	struct iproto_push_msg push_msg;
 	/** Authentication salt. */
 	char salt[IPROTO_SALT_SIZE];
 };
@@ -806,6 +854,7 @@ iproto_connection_new(int fd)
 {
 	struct iproto_connection *con = (struct iproto_connection *)
 		mempool_alloc_xc(&iproto_connection_pool);
+	memset(con, 0, sizeof(*con));
 	con->input.data = con->output.data = con;
 	con->loop = loop();
 	ev_io_init(&con->input, iproto_connection_on_input, fd, EV_READ);
@@ -818,9 +867,6 @@ iproto_connection_new(int fd)
 	con->tx.p_obuf = &con->obuf[0];
 	iproto_wpos_create(&con->wpos, con->tx.p_obuf);
 	iproto_wpos_create(&con->wend, con->tx.p_obuf);
-	con->parse_size = 0;
-	con->long_poll_requests = 0;
-	con->session = NULL;
 	rlist_create(&con->in_stop_list);
 	/* It may be very awkward to allocate at close. */
 	con->disconnect = iproto_msg_new(con);
@@ -1010,9 +1056,9 @@ error:
 }
 
 static void
-tx_fiber_init(struct session *session, uint64_t sync)
+tx_fiber_init(struct session *session, uint64_t *sync)
 {
-	session->meta.sync = sync;
+	session->meta.sync = sync != NULL ? *sync : 0;
 	/*
 	 * We do not cleanup fiber keys at the end of each request.
 	 * This does not lead to privilege escalation as long as
@@ -1025,6 +1071,7 @@ tx_fiber_init(struct session *session, uint64_t sync)
 	 */
 	fiber_set_session(fiber(), session);
 	fiber_set_user(fiber(), &session->credentials);
+	fiber_set_key(fiber(), FIBER_KEY_SYNC, (void *) sync);
 }
 
 /**
@@ -1038,7 +1085,7 @@ tx_process_disconnect(struct cmsg *m)
 	struct iproto_msg *msg = (struct iproto_msg *) m;
 	struct iproto_connection *con = msg->connection;
 	if (con->session) {
-		tx_fiber_init(con->session, 0);
+		tx_fiber_init(con->session, NULL);
 		if (! rlist_empty(&session_on_disconnect))
 			session_run_on_disconnect_triggers(con->session);
 		session_destroy(con->session);
@@ -1108,15 +1155,16 @@ tx_discard_input(struct iproto_msg *msg)
  *   not, the empty buffer is selected.
  * - if neither of the buffers are empty, the function
  *   does not rotate the buffer.
+ *
+ * @param con IProto connection.
+ * @param wpos Last flushed write position, received from IProto
+ *        thread.
  */
-static struct iproto_msg *
-tx_accept_msg(struct cmsg *m)
+static void
+tx_accept_wpos(struct iproto_connection *con, const struct iproto_wpos *wpos)
 {
-	struct iproto_msg *msg = (struct iproto_msg *) m;
-	struct iproto_connection *con = msg->connection;
-
 	struct obuf *prev = &con->obuf[con->tx.p_obuf == con->obuf];
-	if (msg->wpos.obuf == con->tx.p_obuf) {
+	if (wpos->obuf == con->tx.p_obuf) {
 		/*
 		 * We got a message advancing the buffer which
 		 * is being appended to. The previous buffer is
@@ -1134,6 +1182,13 @@ tx_accept_msg(struct cmsg *m)
 		 */
 		con->tx.p_obuf = prev;
 	}
+}
+
+static inline struct iproto_msg *
+tx_accept_msg(struct cmsg *m)
+{
+	struct iproto_msg *msg = (struct iproto_msg *) m;
+	tx_accept_wpos(msg->connection, &msg->wpos);
 	return msg;
 }
 
@@ -1179,7 +1234,7 @@ tx_process1(struct cmsg *m)
 {
 	struct iproto_msg *msg = tx_accept_msg(m);
 
-	tx_fiber_init(msg->connection->session, msg->header.sync);
+	tx_fiber_init(msg->connection->session, &msg->header.sync);
 	if (tx_check_schema(msg->header.schema_version))
 		goto error;
 
@@ -1213,7 +1268,7 @@ tx_process_select(struct cmsg *m)
 	int rc;
 	struct request *req = &msg->dml;
 
-	tx_fiber_init(msg->connection->session, msg->header.sync);
+	tx_fiber_init(msg->connection->session, &msg->header.sync);
 
 	if (tx_check_schema(msg->header.schema_version))
 		goto error;
@@ -1263,7 +1318,7 @@ tx_process_call(struct cmsg *m)
 {
 	struct iproto_msg *msg = tx_accept_msg(m);
 
-	tx_fiber_init(msg->connection->session, msg->header.sync);
+	tx_fiber_init(msg->connection->session, &msg->header.sync);
 
 	if (tx_check_schema(msg->header.schema_version))
 		goto error;
@@ -1347,7 +1402,7 @@ tx_process_misc(struct cmsg *m)
 	struct iproto_connection *con = msg->connection;
 	struct obuf *out = con->tx.p_obuf;
 
-	tx_fiber_init(con->session, msg->header.sync);
+	tx_fiber_init(con->session, &msg->header.sync);
 
 	if (tx_check_schema(msg->header.schema_version))
 		goto error;
@@ -1386,7 +1441,7 @@ tx_process_join_subscribe(struct cmsg *m)
 	struct iproto_msg *msg = tx_accept_msg(m);
 	struct iproto_connection *con = msg->connection;
 
-	tx_fiber_init(con->session, msg->header.sync);
+	tx_fiber_init(con->session, &msg->header.sync);
 
 	try {
 		switch (msg->header.type) {
@@ -1503,7 +1558,7 @@ tx_process_connect(struct cmsg *m)
 		if (con->session == NULL)
 			diag_raise();
 		con->session->meta.conn = con;
-		tx_fiber_init(con->session, 0);
+		tx_fiber_init(con->session, NULL);
 		static __thread char greeting[IPROTO_GREETING_SIZE];
 		/* TODO: dirty read from tx thread */
 		struct tt_uuid uuid = INSTANCE_UUID;
@@ -1653,6 +1708,98 @@ iproto_session_sync(struct session *session)
 	return session->meta.sync;
 }
 
+/** {{{ IPROTO_PUSH implementation. */
+
+/**
+ * Send to IProto thread a notification about new pushes.
+ * @param conn IProto connection.
+ */
+static void
+tx_begin_push(struct iproto_connection *conn);
+
+/**
+ * Create an event to send push.
+ * @param m IProto push message.
+ */
+static void
+net_push_msg(struct cmsg *m)
+{
+	struct iproto_push_msg *msg = (struct iproto_push_msg *) m;
+	struct iproto_connection *conn =
+		container_of(msg, struct iproto_connection, push_msg);
+	conn->wend = msg->wpos;
+	msg->wpos = conn->wpos;
+	if (evio_has_fd(&conn->output) && !ev_is_active(&conn->output))
+		ev_feed_event(conn->loop, &conn->output, EV_WRITE);
+}
+
+/**
+ * After a message notifies IProto thread about pushed data, TX
+ * thread can already have a new push in one of obufs. This
+ * function checks for new pushes and possibly re-sends push
+ * notification to IProto thread.
+ */
+static void
+tx_check_for_new_push(struct cmsg *m)
+{
+	struct iproto_push_msg *msg = (struct iproto_push_msg *) m;
+	struct iproto_connection *conn =
+		container_of(msg, struct iproto_connection, push_msg);
+	tx_accept_wpos(conn, &msg->wpos);
+	conn->is_push_in_progress = false;
+	if (conn->has_new_pushes)
+		tx_begin_push(conn);
+}
+
+static const struct cmsg_hop push_route[] = {
+	{ net_push_msg, &tx_pipe },
+	{ tx_check_for_new_push, NULL }
+};
+
+static void
+tx_begin_push(struct iproto_connection *conn)
+{
+	assert(! conn->is_push_in_progress);
+	cmsg_init((struct cmsg *) &conn->push_msg, push_route);
+	iproto_wpos_create(&conn->push_msg.wpos, conn->tx.p_obuf);
+	conn->has_new_pushes = false;
+	conn->is_push_in_progress = true;
+	cpipe_push(&net_pipe, (struct cmsg *) &conn->push_msg);
+}
+
+/**
+ * Push a message from @a port to a remote client.
+ * @param session IProto session.
+ * @param port Port with data to send.
+ *
+ * @retval -1 Memory error.
+ * @retval  0 Success, a message is wrote to an output buffer. But
+ *          it is not guaranteed, that it will be sent
+ *          successfully.
+ */
+static int
+iproto_session_push(struct session *session, struct port *port)
+{
+	struct iproto_connection *conn =
+		(struct iproto_connection *) session->meta.conn;
+	struct obuf_svp svp;
+	if (iproto_prepare_select(conn->tx.p_obuf, &svp) != 0)
+		return -1;
+	if (port_dump_msgpack(port, conn->tx.p_obuf) != 0) {
+		obuf_rollback_to_svp(conn->tx.p_obuf, &svp);
+		return -1;
+	}
+	iproto_reply_chunk(conn->tx.p_obuf, &svp, fiber_sync(fiber()),
+			   ::schema_version);
+	if (! conn->is_push_in_progress)
+		tx_begin_push(conn);
+	else
+		conn->has_new_pushes = true;
+	return 0;
+}
+
+/** }}} */
+
 /** Initialize the iproto subsystem and start network io thread */
 void
 iproto_init()
@@ -1666,7 +1813,7 @@ iproto_init()
 	cpipe_create(&net_pipe, "net");
 	cpipe_set_max_input(&net_pipe, IPROTO_MSG_MAX/2);
 	struct session_vtab iproto_session_vtab = {
-		/* .push = */ generic_session_push,
+		/* .push = */ iproto_session_push,
 		/* .fd = */ iproto_session_fd,
 		/* .sync = */ iproto_session_sync,
 	};

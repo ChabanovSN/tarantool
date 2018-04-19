@@ -40,6 +40,8 @@ local IPROTO_SCHEMA_VERSION_KEY = 0x05
 local IPROTO_DATA_KEY      = 0x30
 local IPROTO_ERROR_KEY     = 0x31
 local IPROTO_GREETING_SIZE = 128
+local IPROTO_CHUNK_KEY = 128
+local IPROTO_OK_KEY = 0
 
 -- select errors from box.error
 local E_UNKNOWN              = box.error.UNKNOWN
@@ -267,7 +269,8 @@ local function create_transport(host, port, user, password, callback,
     end
 
     -- REQUEST/RESPONSE --
-    local function perform_request(timeout, buffer, method, schema_version, ...)
+    local function perform_request(timeout, buffer, method, on_push,
+                                   schema_version, ...)
         if state ~= 'active' then
             return last_errno or E_NO_CONNECTION, last_error
         end
@@ -280,11 +283,12 @@ local function create_transport(host, port, user, password, callback,
         local id = next_request_id
         method_codec[method](send_buf, id, schema_version, ...)
         next_request_id = next_id(id)
-        local request = table_new(0, 6) -- reserve space for 6 keys
+        local request = table_new(0, 7) -- reserve space for 7 keys
         request.client = fiber_self()
         request.method = method
         request.schema_version = schema_version
         request.buffer = buffer
+        request.on_push = on_push
         requests[id] = request
         repeat
             local timeout = max(0, deadline - fiber_clock())
@@ -308,12 +312,12 @@ local function create_transport(host, port, user, password, callback,
         if request == nil then -- nobody is waiting for the response
             return
         end
-        requests[id] = nil
         local status = hdr[IPROTO_STATUS_KEY]
         local body, body_end_check
 
-        if status ~= 0 then
+        if status > IPROTO_CHUNK_KEY then
             -- Handle errors
+            requests[id] = nil
             body, body_end_check = decode(body_rpos)
             assert(body_end == body_end_check, "invalid xrow length")
             request.errno = band(status, IPROTO_ERRNO_MASK)
@@ -328,16 +332,27 @@ local function create_transport(host, port, user, password, callback,
             local body_len = body_end - body_rpos
             local wpos = buffer:alloc(body_len)
             ffi.copy(wpos, body_rpos, body_len)
-            request.response = tonumber(body_len)
-            wakeup_client(request.client)
-            return
+            if status == IPROTO_OK_KEY then
+                request.response = tonumber(body_len)
+                requests[id] = nil
+                wakeup_client(request.client)
+            elseif request.on_push then
+                assert(status == IPROTO_CHUNK_KEY)
+                request.on_push(tonumber(body_len))
+            end
+        else
+            -- Decode xrow.body[DATA] to Lua objects
+            body, body_end_check = decode(body_rpos)
+            assert(body_end == body_end_check, "invalid xrow length")
+            if status == IPROTO_OK_KEY then
+                request.response = body[IPROTO_DATA_KEY]
+                requests[id] = nil
+                wakeup_client(request.client)
+            elseif request.on_push then
+                assert(status == IPROTO_CHUNK_KEY)
+                request.on_push(body[IPROTO_DATA_KEY][1])
+            end
         end
-
-        -- Decode xrow.body[DATA] to Lua objects
-        body, body_end_check = decode(body_rpos)
-        assert(body_end == body_end_check, "invalid xrow length")
-        request.response = body[IPROTO_DATA_KEY]
-        wakeup_client(request.client)
     end
 
     local function new_request_id()
@@ -834,7 +849,8 @@ function remote_methods:_request(method, opts, ...)
             timeout = deadline and max(0, deadline - fiber_clock())
         end
         err, res = perform_request(timeout, buffer, method,
-                                   self.schema_version, ...)
+                                   opts and opts.on_push, self.schema_version,
+                                   ...)
         if not err and buffer ~= nil then
             return res -- the length of xrow.body
         elseif not err then
@@ -864,7 +880,7 @@ function remote_methods:ping(opts)
         timeout = deadline and max(0, deadline - fiber_clock())
                             or (opts and opts.timeout)
     end
-    local err = self._transport.perform_request(timeout, nil, 'ping',
+    local err = self._transport.perform_request(timeout, nil, 'ping', nil,
                                                 self.schema_version)
     return not err or err == E_WRONG_SCHEMA_VERSION
 end
@@ -1045,10 +1061,10 @@ function console_methods:eval(line, timeout)
     end
     if self.protocol == 'Binary' then
         local loader = 'return require("console").eval(...)'
-        err, res = pr(timeout, nil, 'eval', nil, loader, {line})
+        err, res = pr(timeout, nil, 'eval', nil, nil, loader, {line})
     else
         assert(self.protocol == 'Lua console')
-        err, res = pr(timeout, nil, 'inject', nil, line..'$EOF$\n')
+        err, res = pr(timeout, nil, 'inject', nil, nil, line..'$EOF$\n')
     end
     if err then
         box.error({code = err, reason = res})
