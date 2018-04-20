@@ -63,6 +63,9 @@ iproto_bind(const char *uri);
 void
 iproto_listen();
 
+void
+iproto_set_msg_max(int iproto_msg_max);
+
 #endif /* defined(__cplusplus) */
 
 #endif

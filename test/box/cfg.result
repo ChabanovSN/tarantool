@@ -32,6 +32,8 @@ cfg_filter(box.cfg)
     - false
   - - hot_standby
     - false
+  - - iproto_msg_max
+    - 768
   - - listen
     - <hidden>
   - - log
@@ -129,6 +131,8 @@ cfg_filter(box.cfg)
     - false
   - - hot_standby
     - false
+  - - iproto_msg_max
+    - 768
   - - listen
     - <hidden>
   - - log
@@ -410,6 +414,29 @@ test_run:cmd("stop server cfg_tester")
 test_run:cmd("cleanup server cfg_tester")
 ---
 - true
+...
+--
+-- gh-3320: box.cfg{iproto_msg_max}.
+--
+box.cfg{iproto_msg_max = 'invalid'}
+---
+- error: 'Incorrect value for option ''iproto_msg_max'': should be of type number'
+...
+box.cfg{iproto_msg_max = 0}
+---
+- error: 'Incorrect value for option ''iproto_msg_max'': minimal value is 2'
+...
+old = box.cfg.iproto_msg_max
+---
+...
+box.cfg{iproto_msg_max = 2}
+---
+...
+box.cfg{iproto_msg_max = old + 1000}
+---
+...
+box.cfg{iproto_msg_max = old}
+---
 ...
 test_run:cmd("clear filter")
 ---

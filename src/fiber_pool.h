@@ -41,7 +41,10 @@
 extern "C" {
 #endif /* defined(__cplusplus) */
 
-enum { FIBER_POOL_SIZE = 4096, FIBER_POOL_IDLE_TIMEOUT = 1 };
+enum {
+	FIBER_POOL_SIZE_DEFAULT = 4096,
+	FIBER_POOL_IDLE_TIMEOUT = 1
+};
 
 /**
  * A pool of worker fibers to handle messages,
@@ -82,6 +85,15 @@ struct fiber_pool {
 void
 fiber_pool_create(struct fiber_pool *pool, const char *name, int max_pool_size,
 		  float idle_timeout);
+
+/**
+ * Set maximal fiber pool size. If a new size is bigger than the
+ * current, then pending requests processing is started.
+ * @param pool Fiber pool to set size.
+ * @param new_max_size New maximal size.
+ */
+void
+fiber_pool_set_max_size(struct fiber_pool *pool, int new_max_size);
 
 /**
  * Destroy a fiber pool
