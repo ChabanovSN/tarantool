@@ -458,6 +458,35 @@ vy_scheduler_trigger_dump(struct vy_scheduler *scheduler)
 	fiber_cond_signal(&scheduler->scheduler_cond);
 }
 
+int
+vy_scheduler_dump(struct vy_scheduler *scheduler)
+{
+	/*
+	 * We must not start dump if checkpoint is in progress
+	 * so first wait for checkpoint to complete.
+	 */
+	while (scheduler->checkpoint_in_progress)
+		fiber_cond_wait(&scheduler->dump_cond);
+
+	/* Trigger dump. */
+	if (scheduler->generation == scheduler->dump_generation)
+		scheduler->dump_start = ev_monotonic_now(loop());
+	int64_t generation = ++scheduler->generation;
+	fiber_cond_signal(&scheduler->scheduler_cond);
+
+	/* Wait for dump to complete. */
+	while (scheduler->dump_generation < generation) {
+		if (scheduler->is_throttled) {
+			/* Dump error occurred. */
+			struct error *e = diag_last_error(&scheduler->diag);
+			diag_add_error(diag_get(), e);
+			return -1;
+		}
+		fiber_cond_wait(&scheduler->dump_cond);
+	}
+	return 0;
+}
+
 /**
  * Check whether the current dump round is complete.
  * If it is, free memory and proceed to the next dump round.
@@ -722,7 +751,7 @@ vy_task_dump_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 		goto delete_mems;
 	}
 
-	assert(new_run->info.min_lsn > lsm->dump_lsn);
+	assert(new_run->info.min_lsn >= lsm->dump_lsn);
 	assert(new_run->info.max_lsn <= dump_lsn);
 
 	/*
@@ -1119,11 +1148,12 @@ vy_task_compact_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 		return -1;
 	}
 
-	if (gc_lsn < 0) {
+	if (gc_lsn < 0 || lsm->commit_lsn < 0) {
 		/*
 		 * If there is no last snapshot, i.e. we are in
-		 * the middle of join, we can delete compacted
-		 * run files right away.
+		 * the middle of join, or the index hasn't been
+		 * committed, i.e. we are building it right now,
+		 * we can delete compacted run files right away.
 		 */
 		vy_log_tx_begin();
 		rlist_foreach_entry(run, &unused_runs, in_unused) {

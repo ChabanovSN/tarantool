@@ -62,6 +62,7 @@
 #include "txn.h"
 #include "xrow.h"
 #include "xlog.h"
+#include "schema.h"
 #include "engine.h"
 #include "space.h"
 #include "index.h"
@@ -255,6 +256,11 @@ struct vinyl_iterator {
 static const struct engine_vtab vinyl_engine_vtab;
 static const struct space_vtab vinyl_space_vtab;
 static const struct index_vtab vinyl_index_vtab;
+
+static int
+vy_lsm_get(struct vy_lsm *lsm, struct vy_tx *tx,
+	   const struct vy_read_view **rv,
+	   struct tuple *key, struct tuple **result);
 
 /**
  * A quick intro into Vinyl cosmology and file format
@@ -812,10 +818,10 @@ vinyl_index_commit_create(struct index *index, int64_t lsn)
 	struct vy_env *env = vy_env(index->engine);
 	struct vy_lsm *lsm = vy_lsm(index);
 
-	assert(lsm->id >= 0);
-
 	if (env->status == VINYL_INITIAL_RECOVERY_LOCAL ||
 	    env->status == VINYL_FINAL_RECOVERY_LOCAL) {
+		if (lsm->id >= 0)
+			vy_scheduler_add_lsm(&env->scheduler, lsm);
 		/*
 		 * Normally, if this is local recovery, the index
 		 * should have been logged before restart. There's
@@ -824,10 +830,8 @@ vinyl_index_commit_create(struct index *index, int64_t lsn)
 		 * the index isn't in the recovery context and we
 		 * need to retry to log it now.
 		 */
-		if (lsm->commit_lsn >= 0) {
-			vy_scheduler_add_lsm(&env->scheduler, lsm);
+		if (lsm->commit_lsn >= 0)
 			return;
-		}
 	}
 
 	if (env->status == VINYL_INITIAL_RECOVERY_REMOTE) {
@@ -852,9 +856,6 @@ vinyl_index_commit_create(struct index *index, int64_t lsn)
 	assert(lsm->commit_lsn < 0);
 	lsm->commit_lsn = lsn;
 
-	assert(lsm->range_count == 1);
-	struct vy_range *range = vy_range_tree_first(lsm->tree);
-
 	/*
 	 * Since it's too late to fail now, in case of vylog write
 	 * failure we leave the records we attempted to write in
@@ -864,15 +865,25 @@ vinyl_index_commit_create(struct index *index, int64_t lsn)
 	 * recovery.
 	 */
 	vy_log_tx_begin();
-	vy_log_create_lsm(lsm->id, lsm->space_id, lsm->index_id,
-			  lsm->key_def, lsn);
-	vy_log_insert_range(lsm->id, range->id, NULL, NULL);
+	if (lsm->id < 0) {
+		lsm->id = vy_log_next_id();
+		vy_log_create_lsm(lsm->id, lsm->space_id, lsm->index_id,
+				  lsm->key_def, lsn);
+
+		assert(lsm->range_count == 1);
+		struct vy_range *range = vy_range_tree_first(lsm->tree);
+		vy_log_insert_range(lsm->id, range->id, NULL, NULL);
+
+		vy_scheduler_add_lsm(&env->scheduler, lsm);
+	} else {
+		/*
+		 * The LSM tree has been prepared and built,
+		 * just commit it.
+		 */
+		vy_log_create_lsm(lsm->id, lsm->space_id, lsm->index_id,
+				  lsm->key_def, lsn);
+	}
 	vy_log_tx_try_commit();
-	/*
-	 * After we committed the index in the log, we can schedule
-	 * a task for it.
-	 */
-	vy_scheduler_add_lsm(&env->scheduler, lsm);
 }
 
 static void
@@ -926,6 +937,35 @@ vy_log_lsm_prune(struct vy_lsm *lsm, int64_t gc_lsn)
 		if (++loops % VY_YIELD_LOOPS == 0)
 			fiber_sleep(0);
 	}
+}
+
+static void
+vinyl_index_abort_create(struct index *index)
+{
+	struct vy_env *env = vy_env(index->engine);
+	struct vy_lsm *lsm = vy_lsm(index);
+
+	lsm->is_dropped = true;
+
+	/* Nothing to do if the LSM tree was not prepared for build. */
+	if (lsm->id < 0)
+		return;
+
+	/*
+	 * No need to clean up vylog if this is a failure during
+	 * local recovery.
+	 */
+	if (env->status == VINYL_INITIAL_RECOVERY_LOCAL ||
+	    env->status == VINYL_FINAL_RECOVERY_LOCAL)
+		return;
+
+	vy_scheduler_remove_lsm(&env->scheduler, lsm);
+
+	/* Expunge the incomplete LSM tree from vylog. */
+	vy_log_tx_begin();
+	vy_log_lsm_prune(lsm, 0);
+	vy_log_drop_lsm(lsm->id);
+	vy_log_tx_try_commit();
 }
 
 static void
@@ -1172,50 +1212,491 @@ vinyl_space_drop_primary_key(struct space *space)
 	(void)space;
 }
 
+/**
+ * Prepare a new LSM tree for building.
+ */
 static int
-vinyl_space_build_index(struct space *src_space, struct index *new_index,
-			struct tuple_format *new_format)
+vy_build_prepare(struct vy_env *env, struct vy_lsm *lsm)
 {
-	(void)new_format;
+	/*
+	 * First, log the new LSM tree in vylog. This is necessary,
+	 * because the LSM tree may be dumped during build and so we
+	 * need to keep track of run files created for it so that we
+	 * can clean up in case build fails.
+	 */
+	vy_log_tx_begin();
 
-	struct vy_env *env = vy_env(src_space->engine);
-	struct vy_lsm *pk = vy_lsm(src_space->index[0]);
+	int64_t id = vy_log_next_id();
+	vy_log_prepare_lsm(id, lsm->space_id, lsm->index_id);
+
+	assert(lsm->range_count == 1);
+	struct vy_range *range = vy_range_tree_first(lsm->tree);
+	vy_log_insert_range(id, range->id, NULL, NULL);
+
+	if (vy_log_tx_commit() < 0)
+		return -1;
 
 	/*
-	 * During local recovery we are loading existing indexes
-	 * from disk, not building new ones.
+	 * Assign id. Note, it has to be done after successfully logging
+	 * the new LSM tree, because vinyl_index_abort_create() uses id
+	 * as indicator that index has been successfully prepared.
 	 */
-	if (env->status != VINYL_INITIAL_RECOVERY_LOCAL &&
-	    env->status != VINYL_FINAL_RECOVERY_LOCAL) {
-		if (pk->stat.disk.count.rows != 0 ||
-		    pk->stat.memory.count.rows != 0) {
-			diag_set(ClientError, ER_UNSUPPORTED, "Vinyl",
-				 "building an index for a non-empty space");
+	assert(lsm->id < 0);
+	lsm->id = id;
+
+	/*
+	 * After we committed the new LSM tree in vylog, we add it to
+	 * the scheduler so that it can be dumped and compacted during
+	 * build.
+	 */
+	vy_scheduler_add_lsm(&env->scheduler, lsm);
+	return 0;
+}
+
+/** Argument passed to vy_build_on_replace(). */
+struct vy_build_ctx {
+	/** LSM tree under construction. */
+	struct vy_lsm *lsm;
+	/** Format to check new tuples against. */
+	struct tuple_format *format;
+	/**
+	 * Names of the altered space and the new index.
+	 * Used for error reporting.
+	 */
+	const char *space_name;
+	const char *index_name;
+	/** Set in case a build error occurred. */
+	bool is_failed;
+	/** Container for storing errors. */
+	struct diag diag;
+};
+
+/**
+ * This is an on_replace trigger callback that forwards DML requests
+ * to the index that is currently being built.
+ */
+static void
+vy_build_on_replace(struct trigger *trigger, void *event)
+{
+	struct txn *txn = event;
+	struct txn_stmt *stmt = txn_current_stmt(txn);
+	struct vy_build_ctx *ctx = trigger->data;
+	struct vy_tx *tx = txn->engine_tx;
+	struct tuple_format *format = ctx->format;
+	struct vy_lsm *lsm = ctx->lsm;
+
+	if (ctx->is_failed)
+		return; /* already failed, nothing to do */
+
+	struct tuple *delete = NULL;
+	struct tuple *insert = NULL;
+
+	/* Check new tuples for conformity to the new format. */
+	if (stmt->new_tuple != NULL &&
+	    tuple_validate(format, stmt->new_tuple) != 0)
+		goto err;
+
+	/* Check key uniqueness if necessary. */
+	if (stmt->new_tuple != NULL && lsm->check_is_unique &&
+	    (!lsm->key_def->is_nullable ||
+	     !vy_tuple_key_contains_null(stmt->new_tuple, lsm->key_def))) {
+		struct tuple *key = vy_stmt_extract_key(stmt->new_tuple,
+							lsm->key_def,
+							lsm->env->key_format);
+		if (key == NULL)
+			goto err;
+		struct tuple *found;
+		int rc = vy_lsm_get(lsm, tx, vy_tx_read_view(tx), key, &found);
+		tuple_unref(key);
+		if (rc != 0)
+			goto err;
+		if (found != NULL) {
+			tuple_unref(found);
+			diag_set(ClientError, ER_TUPLE_FOUND,
+				 ctx->index_name, ctx->space_name);
+			goto err;
+		}
+	}
+
+	/* Forward the statement to the new LSM tree. */
+	if (stmt->old_tuple != NULL) {
+		delete = vy_stmt_new_surrogate_delete(format, stmt->old_tuple);
+		if (delete == NULL)
+			goto err;
+	}
+	if (stmt->new_tuple != NULL) {
+		uint32_t data_len;
+		const char *data = tuple_data_range(stmt->new_tuple, &data_len);
+		insert = vy_stmt_new_insert(format, data, data + data_len);
+		if (insert == NULL)
+			goto err;
+	}
+	if (delete != NULL && vy_tx_set(tx, lsm, delete) != 0)
+		goto err;
+	if (insert != NULL && vy_tx_set(tx, lsm, insert) != 0)
+		goto err;
+out:
+	if (delete != NULL)
+		tuple_unref(delete);
+	if (insert != NULL)
+		tuple_unref(insert);
+	return;
+err:
+	ctx->is_failed = true;
+	diag_move(diag_get(), &ctx->diag);
+	goto out;
+}
+
+/**
+ * Insert a tuple fetched from the space into the LSM tree that
+ * is currently being built.
+ */
+static int
+vy_build_insert_tuple(struct vy_env *env, struct vy_lsm *lsm,
+		      const char *space_name, const char *index_name,
+		      struct tuple_format *new_format, struct tuple *tuple)
+{
+	/*
+	 * Use the last LSN to the time, because read iterator
+	 * guarantees that this is the newest tuple version.
+	 */
+	int64_t lsn = env->xm->lsn;
+	struct vy_mem *mem = lsm->mem;
+
+	/* Check the tuple against the new space format. */
+	if (tuple_validate(new_format, tuple) != 0)
+		return -1;
+
+	/* Check unique constraint if necessary. */
+	if (lsm->check_is_unique &&
+	    (!lsm->key_def->is_nullable ||
+	     !vy_tuple_key_contains_null(tuple, lsm->key_def))) {
+		struct tuple *key = vy_stmt_extract_key(tuple, lsm->key_def,
+							lsm->env->key_format);
+		if (key == NULL)
+			return -1;
+		/*
+		 * Make sure the in-memory index won't go away
+		 * while we are reading disk.
+		 */
+		vy_mem_pin(mem);
+
+		struct tuple *found;
+		int rc = vy_lsm_get(lsm, NULL, &env->xm->p_committed_read_view,
+				    key, &found);
+		vy_mem_unpin(mem);
+		tuple_unref(key);
+
+		if (rc != 0)
+			return -1;
+
+		if (found != NULL &&
+		    vy_stmt_compare(tuple, found, lsm->cmp_def) == 0) {
+			tuple_unref(found);
+			return 0;
+		}
+		if (found != NULL) {
+			tuple_unref(found);
+			diag_set(ClientError, ER_TUPLE_FOUND,
+				 index_name, space_name);
 			return -1;
 		}
 	}
 
+	/* Reallocate the new tuple using the new space format. */
+	uint32_t data_len;
+	const char *data = tuple_data_range(tuple, &data_len);
+	struct tuple *stmt = vy_stmt_new_replace(new_format, data,
+						 data + data_len);
+	if (stmt == NULL)
+		return -1;
+
+	/* Insert the new tuple into the in-memory index. */
+	size_t mem_used_before = lsregion_used(&env->mem_env.allocator);
+	const struct tuple *region_stmt = vy_stmt_dup_lsregion(stmt,
+				&mem->env->allocator, mem->generation);
+	tuple_unref(stmt);
+	if (region_stmt == NULL)
+		return -1;
+	vy_stmt_set_lsn((struct tuple *)region_stmt, lsn);
+	if (vy_mem_insert(mem, region_stmt) != 0)
+		return -1;
+
+	mem->min_lsn = MIN(mem->min_lsn, lsn);
+	mem->max_lsn = MAX(mem->max_lsn, lsn);
+	vy_stmt_counter_acct_tuple(&lsm->stat.memory.count, region_stmt);
+
+	size_t mem_used_after = lsregion_used(&env->mem_env.allocator);
+	assert(mem_used_after >= mem_used_before);
+	vy_quota_force_use(&env->quota, mem_used_after - mem_used_before);
+	vy_quota_wait(&env->quota);
+	return 0;
+}
+
+/**
+ * Recover a single statement that was inserted into the space
+ * while the newly built index was dumped to disk.
+ */
+static int
+vy_build_recover_mem_stmt(struct vy_lsm *lsm, struct vy_lsm *pk,
+			  const struct tuple *mem_stmt)
+{
+	int64_t lsn = vy_stmt_lsn(mem_stmt);
+	if (lsn <= lsm->dump_lsn)
+		return 0; /* statement was dumped, nothing to do */
+
+	/* Lookup the tuple that was affected by the statement. */
+	const struct vy_read_view rv = { .vlsn = lsn - 1 };
+	const struct vy_read_view *p_rv = &rv;
+	struct tuple *old_tuple;
+	if (vy_point_lookup(pk, NULL, &p_rv, (struct tuple *)mem_stmt,
+			    &old_tuple) != 0)
+		return -1;
+
+	int rc = -1;
+	uint32_t data_len;
+	const char *data;
+	struct tuple *new_tuple;
+	struct tuple *delete = NULL;
+	struct tuple *insert = NULL;
+
 	/*
-	 * Unlike Memtx, Vinyl does not need building of a secondary index.
-	 * This is true because of two things:
-	 * 1) Vinyl does not support alter of non-empty spaces
-	 * 2) During recovery a Vinyl index already has all needed data on disk.
-	 * And there are 3 cases:
-	 * I. The secondary index is added in snapshot. Then Vinyl was
-	 * snapshotted too and all necessary for that moment data is on disk.
-	 * II. The secondary index is added in WAL. That means that vinyl
-	 * space had no data at that point and had nothing to build. The
-	 * index actually could contain recovered data, but it will handle it
-	 * by itself during WAL recovery.
-	 * III. Vinyl is online. The space is definitely empty and there's
-	 * nothing to build.
+	 * Create DELETE + REPLACE statements corresponding to
+	 * the given statement in the secondary index.
 	 */
+	switch (vy_stmt_type(mem_stmt)) {
+	case IPROTO_INSERT:
+	case IPROTO_REPLACE:
+		data = tuple_data_range(mem_stmt, &data_len);
+		insert = vy_stmt_new_insert(lsm->mem_format,
+					    data, data + data_len);
+		if (insert == NULL)
+			goto out;
+		goto make_delete;
+
+	case IPROTO_UPSERT:
+		new_tuple = vy_apply_upsert(mem_stmt, old_tuple, pk->cmp_def,
+					    pk->mem_format, true);
+		if (new_tuple == NULL)
+			goto out;
+		data = tuple_data_range(new_tuple, &data_len);
+		insert = vy_stmt_new_insert(lsm->mem_format,
+					    data, data + data_len);
+		tuple_unref(new_tuple);
+		if (insert == NULL)
+			goto out;
+		goto make_delete;
+
+	case IPROTO_DELETE: make_delete:
+		if (old_tuple != NULL) {
+			delete = vy_stmt_new_surrogate_delete(lsm->mem_format,
+							      old_tuple);
+			if (delete == NULL)
+				goto out;
+		}
+		break;
+	default:
+		unreachable();
+	}
+
+	/* Insert DELETE + REPLACE into the LSM tree. */
+	if (delete != NULL) {
+		struct tuple *region_stmt = vy_stmt_dup_lsregion(delete,
+						&lsm->mem->env->allocator,
+						lsm->mem->generation);
+		if (region_stmt == NULL)
+			goto out;
+		vy_stmt_set_lsn((struct tuple *)region_stmt, lsn);
+		if (vy_mem_insert(lsm->mem, region_stmt) != 0)
+			goto out;
+		vy_stmt_counter_acct_tuple(&lsm->stat.memory.count, delete);
+	}
+	if (insert != NULL) {
+		struct tuple *region_stmt = vy_stmt_dup_lsregion(insert,
+						&lsm->mem->env->allocator,
+						lsm->mem->generation);
+		if (region_stmt == NULL)
+			goto out;
+		vy_stmt_set_lsn((struct tuple *)region_stmt, lsn);
+		if (vy_mem_insert(lsm->mem, region_stmt) != 0)
+			goto out;
+		vy_stmt_counter_acct_tuple(&lsm->stat.memory.count, insert);
+	}
+	lsm->mem->min_lsn = MIN(lsm->mem->min_lsn, lsn);
+	lsm->mem->max_lsn = MAX(lsm->mem->max_lsn, lsn);
+
+	rc = 0;
+out:
+	if (old_tuple != NULL)
+		tuple_unref(old_tuple);
+	if (delete != NULL)
+		tuple_unref(delete);
+	if (insert != NULL)
+		tuple_unref(insert);
+	return rc;
+
+}
+
+/**
+ * Recover all statements stored in the given in-memory index
+ * that were inserted into the space while the newly built index
+ * was dumped to disk.
+ */
+static int
+vy_build_recover_mem(struct vy_lsm *lsm, struct vy_lsm *pk, struct vy_mem *mem)
+{
+	/*
+	 * Recover statements starting from the oldest one.
+	 * Key order doesn't matter so we simply iterate over
+	 * the in-memory index in reverse order.
+	 */
+	struct vy_mem_tree_iterator itr;
+	itr = vy_mem_tree_iterator_last(&mem->tree);
+	while (!vy_mem_tree_iterator_is_invalid(&itr)) {
+		const struct tuple *mem_stmt;
+		mem_stmt = *vy_mem_tree_iterator_get_elem(&mem->tree, &itr);
+		if (vy_build_recover_mem_stmt(lsm, pk, mem_stmt) != 0)
+			return -1;
+		vy_mem_tree_iterator_prev(&mem->tree, &itr);
+	}
+	return 0;
+}
+
+/**
+ * Recover the memory level of a newly built index.
+ *
+ * During the final dump of a newly built index, new statements may
+ * be inserted into the space. If those statements are not dumped to
+ * disk before restart, they won't be recovered from WAL, because at
+ * the time they were generated the new index didn't exist. In order
+ * to recover them, we replay all statements stored in the memory
+ * level of the primary index.
+ */
+static int
+vy_build_recover(struct vy_env *env, struct vy_lsm *lsm, struct vy_lsm *pk)
+{
+	int rc;
+	struct vy_mem *mem;
+	size_t mem_used_before, mem_used_after;
+
+	mem_used_before = lsregion_used(&env->mem_env.allocator);
+	rlist_foreach_entry_reverse(mem, &pk->sealed, in_sealed) {
+		rc = vy_build_recover_mem(lsm, pk, mem);
+		if (rc != 0)
+			goto out;
+	}
+	rc = vy_build_recover_mem(lsm, pk, pk->mem);
+out:
+	mem_used_after = lsregion_used(&env->mem_env.allocator);
+	assert(mem_used_after >= mem_used_before);
+	vy_quota_force_use(&env->quota, mem_used_after - mem_used_before);
+	return rc;
+}
+
+static int
+vinyl_space_build_index(struct space *src_space, struct index *new_index,
+			struct tuple_format *new_format)
+{
+	struct vy_env *env = vy_env(src_space->engine);
+	struct vy_lsm *pk = vy_lsm(src_space->index[0]);
+	bool is_empty = (pk->stat.disk.count.rows == 0 &&
+			 pk->stat.memory.count.rows == 0);
+
+	if (new_index->def->iid == 0 && !is_empty) {
+		diag_set(ClientError, ER_UNSUPPORTED, "Vinyl",
+			 "rebuilding the primary index of a non-empty space");
+		return -1;
+	}
+
 	if (vinyl_index_open(new_index) != 0)
 		return -1;
 
 	/* Set pointer to the primary key for the new index. */
-	vy_lsm_update_pk(vy_lsm(new_index), pk);
-	return 0;
+	struct vy_lsm *new_lsm = vy_lsm(new_index);
+	vy_lsm_update_pk(new_lsm, pk);
+
+	if (env->status == VINYL_INITIAL_RECOVERY_LOCAL ||
+	    env->status == VINYL_FINAL_RECOVERY_LOCAL)
+		return vy_build_recover(env, new_lsm, pk);
+
+	if (is_empty)
+		return 0;
+
+	if (vy_build_prepare(env, new_lsm) != 0)
+		return -1;
+
+	/*
+	 * Iterate over all tuples stored in the space and insert
+	 * each of them into the new LSM tree. Since read iterator
+	 * may yield, we install an on_replace trigger to forward
+	 * DML requests issued during the build.
+	 */
+	struct tuple *key = vy_stmt_new_select(pk->env->key_format, NULL, 0);
+	if (key == NULL)
+		return -1;
+
+	struct trigger on_replace;
+	struct vy_build_ctx ctx;
+	ctx.lsm = new_lsm;
+	ctx.format = new_format;
+	ctx.space_name = space_name(src_space);
+	ctx.index_name = new_index->def->name;
+	ctx.is_failed = false;
+	diag_create(&ctx.diag);
+	trigger_create(&on_replace, vy_build_on_replace, &ctx, NULL);
+	trigger_add(&src_space->on_replace, &on_replace);
+
+	struct vy_read_iterator itr;
+	vy_read_iterator_open(&itr, pk, NULL, ITER_ALL, key,
+			      &env->xm->p_committed_read_view);
+	int rc;
+	int loops = 0;
+	struct tuple *tuple;
+	while ((rc = vy_read_iterator_next(&itr, &tuple)) == 0) {
+		if (tuple == NULL)
+			break;
+		/*
+		 * Note, yield is not allowed here. If we yielded,
+		 * the tuple could be overwritten by a concurrent
+		 * transaction, in which case we would insert an
+		 * outdated tuple to the new index.
+		 */
+		rc = vy_build_insert_tuple(env, new_lsm, space_name(src_space),
+				new_index->def->name, new_format, tuple);
+		if (rc != 0)
+			break;
+		/*
+		 * Read iterator yields only when it reads runs.
+		 * Yield periodically in order not to stall the
+		 * tx thread in case there are a lot of tuples in
+		 * mems or cache.
+		 */
+		if (++loops % VY_YIELD_LOOPS == 0)
+			fiber_sleep(0);
+		if (ctx.is_failed) {
+			diag_move(&ctx.diag, diag_get());
+			rc = -1;
+			break;
+		}
+	}
+	vy_read_iterator_close(&itr);
+	tuple_unref(key);
+
+	/*
+	 * Dump the new index upon build completion so that we don't
+	 * have to rebuild it on recovery.
+	 */
+	if (rc == 0)
+		rc = vy_scheduler_dump(&env->scheduler);
+
+	if (rc == 0 && ctx.is_failed) {
+		diag_move(&ctx.diag, diag_get());
+		rc = -1;
+	}
+
+	diag_destroy(&ctx.diag);
+	trigger_clear(&on_replace);
+	return rc;
 }
 
 static size_t
@@ -1322,7 +1803,7 @@ vy_is_committed(struct vy_env *env, struct space *space)
  * @param  0 Success.
  * @param -1 Memory error or read error.
  */
-static inline int
+static int
 vy_lsm_get(struct vy_lsm *lsm, struct vy_tx *tx,
 	     const struct vy_read_view **rv,
 	     struct tuple *key, struct tuple **result)
@@ -2929,6 +3410,7 @@ vinyl_engine_end_recovery(struct engine *engine)
 		vy_gc(e, e->recovery, VY_GC_INCOMPLETE, INT64_MAX);
 		vy_recovery_delete(e->recovery);
 		e->recovery = NULL;
+		e->xm->lsn = vclock_sum(e->recovery_vclock);
 		e->recovery_vclock = NULL;
 		e->status = VINYL_ONLINE;
 		vy_quota_set_limit(&e->quota, e->memory);
@@ -3129,7 +3611,8 @@ vy_send_lsm(struct vy_join_ctx *ctx, struct vy_lsm_recovery_info *lsm_info)
 {
 	int rc = -1;
 
-	if (lsm_info->is_dropped)
+	/* Skip dropped or incomplete indexes. */
+	if (lsm_info->is_dropped || lsm_info->create_lsn < 0)
 		return 0;
 
 	/*
@@ -3361,18 +3844,48 @@ vy_gc(struct vy_env *env, struct vy_recovery *recovery,
 	int loops = 0;
 	struct vy_lsm_recovery_info *lsm_info;
 	rlist_foreach_entry(lsm_info, &recovery->lsms, in_recovery) {
+		/*
+		 * Delete unused run files.
+		 */
 		struct vy_run_recovery_info *run_info;
 		rlist_foreach_entry(run_info, &lsm_info->runs, in_lsm) {
-			if ((run_info->is_dropped &&
-			     run_info->gc_lsn < gc_lsn &&
-			     (gc_mask & VY_GC_DROPPED) != 0) ||
-			    (run_info->is_incomplete &&
-			     (gc_mask & VY_GC_INCOMPLETE) != 0)) {
+			bool purge = false;
+
+			/* Run was deleted before the oldest checkpoint. */
+			if ((gc_mask & VY_GC_DROPPED) != 0 &&
+			    run_info->is_dropped && run_info->gc_lsn < gc_lsn)
+				purge = true;
+
+			/* Index or run was not committed. */
+			if ((gc_mask & VY_GC_INCOMPLETE) != 0 &&
+			    (lsm_info->create_lsn < 0 || run_info->is_incomplete))
+				purge = true;
+
+			if (purge)
 				vy_gc_run(env, lsm_info, run_info);
-			}
+
 			if (loops % VY_YIELD_LOOPS == 0)
 				fiber_sleep(0);
 		}
+
+		/*
+		 * Purge incomplete indexes from vylog.
+		 */
+		if (lsm_info->create_lsn >= 0 || lsm_info->is_dropped ||
+		    (gc_mask & VY_GC_INCOMPLETE) == 0)
+			continue;
+
+		vy_log_tx_begin();
+		struct vy_range_recovery_info *range_info;
+		rlist_foreach_entry(range_info, &lsm_info->ranges, in_lsm) {
+			struct vy_slice_recovery_info *slice_info;
+			rlist_foreach_entry(slice_info, &range_info->slices,
+					    in_range)
+				vy_log_delete_slice(slice_info->id);
+			vy_log_delete_range(range_info->id);
+		}
+		vy_log_drop_lsm(lsm_info->id);
+		vy_log_tx_try_commit();
 	}
 }
 
@@ -3424,7 +3937,8 @@ vinyl_engine_backup(struct engine *engine, struct vclock *vclock,
 	int loops = 0;
 	struct vy_lsm_recovery_info *lsm_info;
 	rlist_foreach_entry(lsm_info, &recovery->lsms, in_recovery) {
-		if (lsm_info->is_dropped)
+		/* Skip dropped or incomplete indexes. */
+		if (lsm_info->is_dropped || lsm_info->create_lsn < 0)
 			continue;
 		struct vy_run_recovery_info *run_info;
 		rlist_foreach_entry(run_info, &lsm_info->runs, in_lsm) {
@@ -4030,7 +4544,7 @@ static const struct space_vtab vinyl_space_vtab = {
 static const struct index_vtab vinyl_index_vtab = {
 	/* .destroy = */ vinyl_index_destroy,
 	/* .commit_create = */ vinyl_index_commit_create,
-	/* .abort_create = */ generic_index_abort_create,
+	/* .abort_create = */ vinyl_index_abort_create,
 	/* .commit_modify = */ vinyl_index_commit_modify,
 	/* .commit_drop = */ vinyl_index_commit_drop,
 	/* .update_def = */ generic_index_update_def,

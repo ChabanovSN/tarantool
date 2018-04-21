@@ -152,7 +152,12 @@ struct vy_lsm {
 	 * until all pending operations have completed.
 	 */
 	int refs;
-	/** Unique ID of this LSM tree. */
+	/**
+	 * Unique ID of this LSM tree.
+	 *
+	 * Assigned when the LSM tree is first logged
+	 * (VY_LOG_PREPARE_LSM or VY_LOG_CREATE_LSM).
+	 */
 	int64_t id;
 	/** ID of the index this LSM tree is for. */
 	uint32_t index_id;
