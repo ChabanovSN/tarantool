@@ -6,6 +6,7 @@ ffi.cdef[[
            const char *needle,   size_t needle_len);
     int memcmp(const char *mem1, const char *mem2, size_t num);
     int isspace(int c);
+    int sscanf(const char *str, const char *format, ...);
 ]]
 
 local c_char_ptr = ffi.typeof('const char *')
@@ -285,7 +286,7 @@ local function string_hex(inp)
     local len = inp:len() * 2
     local res = ffi.new('char[?]', len + 1)
 
-    local uinp = ffi.cast('const unsigned char *', inp) 
+    local uinp = ffi.cast('const unsigned char *', inp)
     for i = 0, inp:len() - 1 do
         ffi.C.snprintf(res + i * 2, 3, "%02x", ffi.cast('unsigned', uinp[i]))
     end
@@ -311,6 +312,30 @@ local function string_fromhex(inp)
         ans[i] = string.char(tonumber(byte, 16))
     end
     return table.concat(ans)
+end
+
+local function string_fromhex_ffi(inp)
+    if type(inp) ~= 'string' then
+        error(err_string_arg:format(1, 'string.fromhex', 'string', type(inp)), 2)
+    end
+
+    if inp:len() % 2 ~= 0 then
+        error(err_string_arg:format(1, 'string.fromhex', 'even string', 'odd string'), 2)
+    end
+    local matches = {string.match(inp, '^([0-9A-Fa-f]+)$')}
+    if #matches ~= 1 then
+        error(err_string_arg:format(1, 'string.fromhex', 'hex string', 'not hex string'), 2)
+    end
+    local len = inp:len() / 2
+    local res = ffi.new('char[?]', len)
+    local uinp = ffi.cast('const char *', inp)
+    local byte = ffi.new('int[?]', 1)
+
+    for i = 0, len - 1 do
+        ffi.C.sscanf(uinp + i * 2, "%02x", byte)
+        res[i] = ffi.cast('char', byte[0])
+    end
+    return ffi.string(res, len)
 end
 
 local function string_strip(inp)
@@ -345,6 +370,7 @@ string.startswith = string_startswith
 string.endswith   = string_endswith
 string.hex        = string_hex
 string.fromhex  = string_fromhex
+string.fromhex_ffi  = string_fromhex_ffi
 string.strip      = string_strip
 string.lstrip      = string_lstrip
 string.rstrip      = string_rstrip
