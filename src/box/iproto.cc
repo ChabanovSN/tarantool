@@ -582,7 +582,8 @@ iproto_enqueue_batch(struct iproto_connection *con, struct ibuf *in)
 {
 	int n_requests = 0;
 	bool stop_input = false;
-	while (con->parse_size && stop_input == false) {
+	while (con->parse_size != 0 && stop_input == false &&
+	       !iproto_must_stop_input()) {
 		const char *reqstart = in->wpos - con->parse_size;
 		const char *pos = reqstart;
 		/* Read request length. */
@@ -691,18 +692,26 @@ iproto_connection_on_input(ev_loop *loop, struct ev_io *watcher,
 		int nrd = sio_read(fd, in->wpos, ibuf_unused(in));
 		if (nrd < 0) {                  /* Socket is not ready. */
 			ev_io_start(loop, &con->input);
-			return;
-		}
-		if (nrd == 0) {                 /* EOF */
+			/*
+			 * Socket has no data, but there can be
+			 * non-parsed requests, stopped by
+			 * requests limit. Try to enqueue them, if
+			 * exist.
+			 */
+			if (con->parse_size == 0)
+				return;
+		} else if (nrd == 0) {
+			/* EOF */
 			iproto_connection_close(con);
 			return;
-		}
-		/* Count statistics */
-		rmean_collect(rmean_net, IPROTO_RECEIVED, nrd);
+		} else {
+			/* Count statistics */
+			rmean_collect(rmean_net, IPROTO_RECEIVED, nrd);
 
-		/* Update the read position and connection state. */
-		in->wpos += nrd;
-		con->parse_size += nrd;
+			/* Update the read position and connection state. */
+			in->wpos += nrd;
+			con->parse_size += nrd;
+		}
 		/* Enqueue all requests which are fully read up. */
 		iproto_enqueue_batch(con, in);
 	} catch (Exception *e) {

@@ -63,6 +63,16 @@ wait_block()
 active == run_max * 2 or active
 wait_finished(active)
 
+--
+-- Test that each message in a batch is checked. When a limit is
+-- reached, other messages must be processed later.
+--
+run_max = limit * 5
+run_workers(conn)
+wait_block()
+active
+wait_finished(run_max)
+
 conn2:close()
 conn:close()
 
