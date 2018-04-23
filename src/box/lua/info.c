@@ -149,6 +149,13 @@ lbox_pushreplica(lua_State *L, struct replica *replica)
 		lua_pushstring(L, "downstream");
 		lbox_pushrelay(L, relay);
 		lua_settable(L, -3);
+	} else if (replica->relay_state == RELAY_DISCONNECTED) {
+		lua_pushstring(L, "downstream");
+		lua_newtable(L);
+		lua_pushstring(L, "status");
+		lua_pushstring(L, "disconnected");
+		lua_settable(L, -3);
+		lua_settable(L, -3);
 	}
 }
 

@@ -661,6 +661,7 @@ replica_set_relay(struct replica *replica, struct relay *relay)
 {
 	assert(replica->id != REPLICA_ID_NIL);
 	assert(replica->relay == NULL);
+	replica->relay_state = RELAY_CONNECTED;
 	replica->relay = relay;
 }
 
@@ -669,6 +670,7 @@ replica_clear_relay(struct replica *replica)
 {
 	assert(replica->relay != NULL);
 	replica->relay = NULL;
+	replica->relay_state = RELAY_DISCONNECTED;
 	if (replica_is_orphan(replica)) {
 		replica_hash_remove(&replicaset.hash, replica);
 		replica_delete(replica);

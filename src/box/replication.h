@@ -226,6 +226,21 @@ enum replica_state {
 	REPLICA_SYNCED,
 };
 
+enum relay_state {
+	/**
+	 * Applier has not connected to the master or not expected.
+	 */
+	RELAY_NONE,
+	/**
+	 * Applier has connected to the master.
+	 */
+	RELAY_CONNECTED,
+	/**
+	 * Applier disconnected from the master.
+	 */
+	RELAY_DISCONNECTED,
+};
+
 /**
  * Summary information about a replica in the replica set.
  */
@@ -256,6 +271,8 @@ struct replica {
 	struct trigger on_applier_state;
 	/** Replica sync state. */
 	enum replica_state state;
+	/** Relay sync state. */
+	enum relay_state relay_state;
 };
 
 enum {
