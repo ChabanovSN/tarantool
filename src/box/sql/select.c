@@ -1664,12 +1664,12 @@ columnTypeImpl(NameContext * pNC, Expr * pExpr,
 				assert(iCol >= 0 && iCol <
 						    (int)pTab->def->field_count);
 #ifdef SQLITE_ENABLE_COLUMN_METADATA
-				zOrigCol = pTab->aCol[iCol].zName;
-				zType = sqlite3ColumnType(&pTab->aCol[iCol], 0);
+				zOrigCol = pTab->def->fields[iCol].name;
+				zType = pTab->def->fields[iCol].type;
 				estWidth = pTab->aCol[iCol].szEst;
 				zOrigTab = pTab->zName;
 #else
-				column_type = sqlite3ColumnType(&pTab->aCol[iCol]);
+				column_type = pTab->def->fields[iCol].type;
 				estWidth = pTab->aCol[iCol].szEst;
 #endif
 			}
@@ -1937,7 +1937,7 @@ sqlite3SelectAddColumnTypeAndCollation(Parse * pParse,		/* Parsing contexts */
 		type = columnType(&sNC, p, 0, 0, 0, &pCol->szEst);
 		szAll += pCol->szEst;
 		pCol->affinity = sqlite3ExprAffinity(p);
-		pCol->type = type;
+		pTab->def->fields[i].type = type;
 
 		if (pCol->affinity == 0)
 			pCol->affinity = SQLITE_AFF_BLOB;

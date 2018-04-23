@@ -685,7 +685,8 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 	}
 	pCol = &p->aCol[p->def->field_count];
 	memset(pCol, 0, sizeof(p->aCol[0]));
-	p->def->fields[p->def->field_count].name = z;
+	struct field_def *column_def = &p->def->fields[p->def->field_count];
+	column_def->name = z;
 	if (pType->n == 0) {
 		/* If there is no type specified, columns have the default affinity
 		 * 'BLOB' and type SCALAR.
@@ -693,8 +694,8 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 		 * specified type, the code below should emit an error.
 		 */
 		pCol->affinity = SQLITE_AFF_BLOB;
-		pCol->type = FIELD_TYPE_SCALAR;
 		pCol->szEst = 1;
+		column_def->type = FIELD_TYPE_SCALAR;
 	} else {
 		/* TODO: convert string of type into runtime
 		 * FIELD_TYPE value for other types.
@@ -703,16 +704,16 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 		     pType->n == 7) ||
 		    (sqlite3StrNICmp(pType->z, "INT", 3) == 0 &&
 		     pType->n == 3)) {
-			pCol->type = FIELD_TYPE_INTEGER;
 			pCol->affinity = SQLITE_AFF_INTEGER;
+			column_def->type = FIELD_TYPE_INTEGER;
 		} else {
 			zType = sqlite3_malloc(pType->n + 1);
 			memcpy(zType, pType->z, pType->n);
 			zType[pType->n] = 0;
 			sqlite3Dequote(zType);
 			pCol->affinity = sqlite3AffinityType(zType, 0);
-			pCol->type = FIELD_TYPE_SCALAR;
 			sqlite3_free(zType);
+			column_def->type = FIELD_TYPE_SCALAR;
 		}
 	}
 	p->def->field_count++;
@@ -935,9 +936,10 @@ sqlite3AddPrimaryKey(Parse * pParse,	/* Parsing context */
 			}
 		}
 	}
+	assert(pCol == &pTab->aCol[iCol]);
 	if (nTerm == 1
 	    && pCol
-	    && (sqlite3ColumnType(pCol) == FIELD_TYPE_INTEGER)
+	    && (pTab->def->fields[iCol].type == FIELD_TYPE_INTEGER)
 	    && sortOrder != SQLITE_SO_DESC) {
 		assert(autoInc == 0 || autoInc == 1);
 		pTab->iPKey = iCol;

@@ -1430,10 +1430,12 @@ int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf)
 {
 	struct Column *aCol = pTable->aCol;
 	const struct Enc *enc = get_enc(buf);
+	const struct space_def *def = pTable->def;
+	assert(def != NULL);
 	struct SqliteIndex *pk_idx = sqlite3PrimaryKeyIndex(pTable);
 	int pk_forced_int = -1;
 	char *base = buf, *p;
-	int i, n = pTable->def->field_count;
+	int i, n = def->field_count;
 
 	p = enc->encode_array(base, n);
 
@@ -1441,14 +1443,14 @@ int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf)
 	 * treat it as strict type, not affinity.  */
 	if (pk_idx && pk_idx->nColumn == 1) {
 		int pk = pk_idx->aiColumn[0];
-		if (pTable->aCol[pk].type == FIELD_TYPE_INTEGER)
+		if (def->fields[pk].type == FIELD_TYPE_INTEGER)
 			pk_forced_int = pk;
 	}
 
 	for (i = 0; i < n; i++) {
 		const char *t;
 		struct coll *coll = aCol[i].coll;
-		struct field_def *field = &pTable->def->fields[i];
+		struct field_def *field = &def->fields[i];
 		const char *zToken = field->default_value;
 		int base_len = 4;
 		if (coll != NULL)
@@ -1521,6 +1523,9 @@ int tarantoolSqlite3MakeTableOpts(Table *pTable, const char *zSql, void *buf)
 int tarantoolSqlite3MakeIdxParts(SqliteIndex *pIndex, void *buf)
 {
 	struct Column *aCol = pIndex->pTable->aCol;
+	struct space_def *def = pIndex->pTable->def;
+	assert(def != NULL);
+
 	const struct Enc *enc = get_enc(buf);
 	struct SqliteIndex *primary_index;
 	char *base = buf, *p;
@@ -1532,7 +1537,7 @@ int tarantoolSqlite3MakeIdxParts(SqliteIndex *pIndex, void *buf)
 	 * treat it as strict type, not affinity.  */
 	if (primary_index->nColumn == 1) {
 		int pk = primary_index->aiColumn[0];
-		if (aCol[pk].type == FIELD_TYPE_INTEGER)
+		if (def->fields[pk].type == FIELD_TYPE_INTEGER)
 			pk_forced_int = pk;
 	}
 

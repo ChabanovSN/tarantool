@@ -1867,7 +1867,6 @@ struct Savepoint {
  * of this structure.
  */
 struct Column {
-	enum field_type type;	/* Column type. */
 	/** Collating sequence. */
 	struct coll *coll;
 	/**
@@ -3388,7 +3387,6 @@ int sqlite3IoerrnomemError(int);
  */
 int sqlite3StrICmp(const char *, const char *);
 unsigned sqlite3Strlen30(const char *);
-enum field_type sqlite3ColumnType(Column *);
 #define sqlite3StrNICmp sqlite3_strnicmp
 
 void sqlite3MallocInit(void);

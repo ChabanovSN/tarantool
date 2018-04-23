@@ -381,13 +381,13 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 						space_cache_find(space_id);
 					char *expr_str = space->
 						def->fields[i].default_value;
+					const char *name =
+						pTab->def->fields[i].name;
+					enum field_type type =
+						pTab->def->fields[i].type;
 					sqlite3VdbeMultiLoad(v, 1, "issisi",
-							     i,
-							     pTab->def->fields[i].
-								     name,
-							     field_type_strs[
-							     sqlite3ColumnType
-							     (pCol)],
+							     i, name,
+							     field_type_strs[type],
 							     nullable == 0,
 							     expr_str, k);
 					sqlite3VdbeAddOp2(v, OP_ResultRow, 1,
