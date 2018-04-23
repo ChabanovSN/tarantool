@@ -155,6 +155,15 @@ struct Table *
 sql_ephemeral_table_new(struct Parse *parser);
 
 /**
+ * Create and initialize a new ephemeric space_def object.
+ * @param pParse SQL Parser object.
+ * @retval NULL on memory allocation error, Parser state changed.
+ * @retval not NULL on success.
+ */
+struct space_def *
+sql_ephemeral_space_def_new(struct Parse *parser);
+
+/**
  * Rebuild struct def in Table with memory allocated on a single
  * malloc. Fields and strings are expected to be allocated with
  * sqlite3DbMalloc.

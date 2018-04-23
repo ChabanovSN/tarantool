@@ -1822,9 +1822,20 @@ sqlite3ColumnsFromExprList(Parse * pParse,	/* Parsing context */
 		aCol = 0;
 	}
 	assert(nCol == (i16) nCol);
+
+	struct region *region = &fiber()->gc;
 	assert(pTable->def->fields == NULL);
+	if (pTable->def->opts.temporary == false) {
+		/* CREATE VIEW name AS...  without an argument list.  Construct
+		 * the column names from the SELECT statement that defines the view.
+		 */
+		pTable->def->field_count = 0;
+		space_def_delete(pTable->def);
+		pTable->def = sql_ephemeral_space_def_new(pParse);
+	}
 	pTable->def->fields =
-		sqlite3DbMallocZero(db, nCol*sizeof(pTable->def->fields[0]));
+		region_alloc(region, nCol*sizeof(pTable->def->fields[0]));
+	memset(pTable->def->fields, 0, nCol*sizeof(pTable->def->fields[0]));
 	pTable->def->field_count = (uint32_t)nCol;
 	pTable->aCol = aCol;
 
@@ -1877,9 +1888,16 @@ sqlite3ColumnsFromExprList(Parse * pParse,	/* Parsing context */
 			if (cnt > 3)
 				sqlite3_randomness(sizeof(cnt), &cnt);
 		}
-		pTable->def->fields[i].name = zName;
-		if (zName && sqlite3HashInsert(&ht, zName, pCol) == pCol) {
+		uint32_t zNameLen = (uint32_t)strlen(zName);
+		if (zName && sqlite3HashInsert(&ht, zName, pCol) == pCol)
 			sqlite3OomFault(db);
+		pTable->def->fields[i].name =
+			region_alloc(region, zNameLen + 1);
+		if (pTable->def->fields[i].name == NULL) {
+			sqlite3OomFault(db);
+		} else {
+			memcpy(pTable->def->fields[i].name, zName, zNameLen);
+			pTable->def->fields[i].name[zNameLen] = '\0';
 		}
 	}
 	sqlite3HashClear(&ht);

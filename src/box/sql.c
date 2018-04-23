@@ -1685,22 +1685,43 @@ space_column_default_expr(uint32_t space_id, uint32_t fieldno)
 	return space->def->fields[fieldno].default_value_expr;
 }
 
+struct space_def *
+sql_ephemeral_space_def_new(Parse *parser)
+{
+	struct space_def *def = NULL;
+	struct region *region = &fiber()->gc;
+	size_t size = sizeof(struct space_def) + 1;
+	def = (struct space_def *)region_alloc(region, size);
+	if (def != NULL) {
+		memset(def, 0, size);
+		def->dict =
+			(struct tuple_dictionary *)
+				region_alloc(region,
+					     sizeof(struct tuple_dictionary));
+	}
+	if (def == NULL || def->dict == NULL) {
+		parser->rc = SQLITE_NOMEM_BKPT;
+		parser->nErr++;
+		return NULL;
+	}
+	def->dict->refs = 1;
+	def->opts.temporary = true;
+	return def;
+}
+
 Table *
 sql_ephemeral_table_new(Parse *parser)
 {
 	sqlite3 *db = parser->db;
 	struct space_def *def = NULL;
 	Table *table = sqlite3DbMallocZero(db, sizeof(Table));
-	if (table != NULL) {
-		def = space_def_new(0, 0, 0, NULL, 0, NULL, 0,
-				    &space_opts_default, NULL, 0);
-	}
+	if (table != NULL)
+		def = sql_ephemeral_space_def_new(parser);
 	if (def == NULL) {
 		sqlite3DbFree(db, table);
-		parser->rc = SQLITE_NOMEM_BKPT;
-		parser->nErr++;
 		return NULL;
 	}
+
 	table->def = def;
 	return table;
 }
@@ -1708,6 +1729,9 @@ sql_ephemeral_table_new(Parse *parser)
 int
 sql_table_def_rebuild(struct sqlite3 *db, struct Table *pTable)
 {
+	assert(pTable->def->opts.temporary == true);
+
+	/* All allocations are on region. */
 	struct space_def *old_def = pTable->def;
 	struct space_def *new_def = NULL;
 	new_def = space_def_new(old_def->id, old_def->uid,
@@ -1719,13 +1743,7 @@ sql_table_def_rebuild(struct sqlite3 *db, struct Table *pTable)
 		sqlite3OomFault(db);
 		return -1;
 	}
-	struct field_def *fields = old_def->fields;
-	for (uint32_t i = 0; i < old_def->field_count; ++i) {
-		sqlite3DbFree(db, fields[i].default_value);
-		sqlite3DbFree(db, fields[i].name);
-	}
-	space_def_delete(old_def);
-	sqlite3DbFree(db, fields);
 	pTable->def = new_def;
+	pTable->def->opts.temporary = false;
 	return 0;
 }

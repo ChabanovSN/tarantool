@@ -211,17 +211,19 @@ sqlite3InitDatabase(sqlite3 * db)
 void
 sqlite3ParserReset(Parse * pParse)
 {
-	if (pParse) {
-		sqlite3 *db = pParse->db;
-		sqlite3DbFree(db, pParse->aLabel);
-		sqlite3ExprListDelete(db, pParse->pConstExpr);
-		if (db) {
-			assert(db->lookaside.bDisable >=
-			       pParse->disableLookaside);
-			db->lookaside.bDisable -= pParse->disableLookaside;
-		}
-		pParse->disableLookaside = 0;
+	if (pParse == NULL)
+		return;
+	sqlite3 *db = pParse->db;
+	sqlite3DbFree(db, pParse->aLabel);
+	sqlite3ExprListDelete(db, pParse->pConstExpr);
+	if (db) {
+		assert(db->lookaside.bDisable >=
+		       pParse->disableLookaside);
+		db->lookaside.bDisable -= pParse->disableLookaside;
 	}
+	pParse->disableLookaside = 0;
+	struct region *region = &fiber()->gc;
+	region_truncate(region, pParse->region_initial_size);
 }
 
 /*
@@ -265,6 +267,10 @@ sqlite3Prepare(sqlite3 * db,	/* Database handle. */
 	 * works even if READ_UNCOMMITTED is set.
 	 */
 	sParse.db = db;
+	/* Store region initial size to revert future allocations */
+	struct region *region = &fiber()->gc;
+	sParse.region_initial_size = region_used(region);
+
 	if (nBytes >= 0 && (nBytes == 0 || zSql[nBytes - 1] != 0)) {
 		char *zSqlCopy;
 		int mxLen = db->aLimit[SQLITE_LIMIT_SQL_LENGTH];

@@ -2933,6 +2933,8 @@ struct Parse {
 	u8 eTriggerOp;		/* TK_UPDATE, TK_INSERT or TK_DELETE */
 	u8 eOrconf;		/* Default ON CONFLICT policy for trigger steps */
 	u8 disableTriggers;	/* True to disable triggers */
+	/** Region size at the Parser launch */
+	size_t region_initial_size;
 
   /**************************************************************************
   * Fields above must be initialized to zero.  The fields that follow,

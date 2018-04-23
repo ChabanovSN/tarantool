@@ -386,7 +386,9 @@ deleteTable(sqlite3 * db, Table * pTable)
 	sqlite3DbFree(db, pTable->zColAff);
 	sqlite3SelectDelete(db, pTable->pSelect);
 	sqlite3ExprListDelete(db, pTable->pCheck);
-	if (pTable->def != NULL)
+	/* Do not delete pTable->def allocated not on region. */
+	assert(pTable->def != NULL);
+	if (pTable->def->opts.temporary == false)
 		space_def_delete(pTable->def);
 	sqlite3DbFree(db, pTable);
 
@@ -483,6 +485,7 @@ sqlite3PrimaryKeyIndex(Table * pTab)
 
 /**
  * Create and initialize a new SQL Table object.
+ * All memory is allocated on region.
  * @param parser SQL Parser object.
  * @param name Table to create name.
  * @retval NULL on memory allocation error.
@@ -603,29 +606,33 @@ sqlite3StartTable(Parse *pParse, Token *pName, int noErr)
 static struct field_def *
 sql_field_retrieve(Parse *parser, Table *table, uint32_t id)
 {
-	sqlite3 *db = parser->db;
 	struct field_def *field;
 	assert(table->def != NULL);
 	assert(id < SQLITE_MAX_COLUMN);
 
 	if (id >= table->def->exact_field_count) {
-		uint32_t columns = table->def->exact_field_count;
-		columns = (columns > 0) ? 2 * columns : 1;
-		field = sqlite3DbRealloc(db, table->def->fields,
-					 columns * sizeof(table->def->fields[0]));
+		uint32_t columns_new = table->def->exact_field_count;
+		columns_new = (columns_new > 0) ? 2 * columns_new : 1;
+		struct region *region = &fiber()->gc;
+		field = region_alloc(region,
+				     columns_new * sizeof(table->def->fields[0]));
 		if (field == NULL) {
 			parser->rc = SQLITE_NOMEM_BKPT;
 			parser->nErr++;
 			return NULL;
 		}
 
-		for (uint32_t i = columns / 2; i < columns; i++) {
+		for (uint32_t i = 0; i < table->def->exact_field_count; i++) {
+			memcpy(&field[i], &table->def->fields[i],
+			       sizeof(struct field_def));
+		}
+		for (uint32_t i = columns_new / 2; i < columns_new; i++) {
 			memcpy(&field[i], &field_def_default,
 			       sizeof(struct field_def));
 		}
 
 		table->def->fields = field;
-		table->def->exact_field_count = columns;
+		table->def->exact_field_count = columns_new;
 	}
 
 	field = &table->def->fields[id];
@@ -651,6 +658,7 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 	sqlite3 *db = pParse->db;
 	if ((p = pParse->pNewTable) == 0)
 		return;
+	assert(p->def->opts.temporary == true);
 #if SQLITE_MAX_COLUMN
 	if ((int)p->def->field_count + 1 > db->aLimit[SQLITE_LIMIT_COLUMN]) {
 		sqlite3ErrorMsg(pParse, "too many columns on %s", p->zName);
@@ -659,7 +667,8 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 #endif
 	if (sql_field_retrieve(pParse, p, (uint32_t) p->def->field_count) == NULL)
 		return;
-	z = sqlite3DbMallocRaw(db, pName->n + 1);
+	struct region *region = &fiber()->gc;
+	z = region_alloc(region, pName->n + 1);
 	if (z == 0)
 		return;
 	memcpy(z, pName->z, pName->n);
@@ -668,7 +677,6 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 	for (i = 0; i < (int)p->def->field_count; i++) {
 		if (strcmp(z, p->def->fields[i].name) == 0) {
 			sqlite3ErrorMsg(pParse, "duplicate column name: %s", z);
-			sqlite3DbFree(db, z);
 			return;
 		}
 	}
@@ -677,10 +685,8 @@ sqlite3AddColumn(Parse * pParse, Token * pName, Token * pType)
 		aNew =
 		    sqlite3DbRealloc(db, p->aCol,
 				     (p->def->field_count + 8) * sizeof(p->aCol[0]));
-		if (aNew == 0) {
-			sqlite3DbFree(db, z);
+		if (aNew == 0)
 			return;
-		}
 		p->aCol = aNew;
 	}
 	pCol = &p->aCol[p->def->field_count];
@@ -848,6 +854,7 @@ sqlite3AddDefaultValue(Parse * pParse, ExprSpan * pSpan)
 	Table *p;
 	sqlite3 *db = pParse->db;
 	p = pParse->pNewTable;
+	assert(p->def->opts.temporary == true);
 	if (p != 0) {
 		if (!sqlite3ExprIsConstantOrFunction
 		    (pSpan->pExpr, db->init.busy)) {
@@ -855,17 +862,21 @@ sqlite3AddDefaultValue(Parse * pParse, ExprSpan * pSpan)
 					"default value of column [%s] is not constant",
 					p->def->fields[p->def->field_count - 1].name);
 		} else {
+			assert(p->def != NULL);
 			struct field_def *field =
 				&p->def->fields[p->def->field_count - 1];
-			field->default_value =
-				sqlite3DbStrNDup(db,
-						 (char *)pSpan->zStart,
-						 (int)(pSpan->zEnd - pSpan->zStart));
+			struct region *region = &fiber()->gc;
+			uint32_t default_length = (int)(pSpan->zEnd - pSpan->zStart);
+			field->default_value = region_alloc(region,
+							    default_length + 1);
 			if (field->default_value == NULL) {
 				pParse->rc = SQLITE_NOMEM_BKPT;
 				pParse->nErr++;
 				return;
 			}
+			strncpy(field->default_value, (char *)pSpan->zStart,
+				default_length);
+			field->default_value[default_length] = '\0';
 		}
 	}
 	sql_expr_free(db, pSpan->pExpr, false);
@@ -1952,6 +1963,7 @@ sqlite3EndTable(Parse * pParse,	/* Parse context */
 	if (db->init.busy) {
 		Table *pOld;
 		Schema *pSchema = p->pSchema;
+		assert(p->def->opts.temporary == false);
 		pOld = sqlite3HashInsert(&pSchema->tblHash, p->zName, p);
 		if (pOld) {
 			assert(p == pOld);	/* Malloc must have failed inside HashInsert() */
@@ -2123,6 +2135,7 @@ sqlite3ViewGetColumnNames(Parse * pParse, Table * pTable)
 								       pSel);
 			}
 		} else if (pSelTab) {
+			assert(pTable->def->opts.temporary == false);
 			/* CREATE VIEW name AS...  without an argument list.  Construct
 			 * the column names from the SELECT statement that defines the view.
 			 */
@@ -2163,6 +2176,8 @@ sqliteViewResetAll(sqlite3 * db)
 		if (pTab->pSelect) {
 			sqlite3DeleteColumnNames(db, pTab);
 			struct space_def *old_def = pTab->def;
+			assert(old_def->opts.temporary == false);
+			/* Ignore fields allocated on region */
 			pTab->def = space_def_new(old_def->id, old_def->uid,
 						  0,
 						  old_def->name,
