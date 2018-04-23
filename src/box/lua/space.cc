@@ -198,13 +198,34 @@ lbox_fillspace(struct lua_State *L, struct space *space, int i)
 		lua_settable(L, i);	/* push space.index */
 		lua_getfield(L, i, "index");
 	} else {
-		/* Empty the table. */
-		lua_pushnil(L);  /* first key */
+		/*
+		 * Remove only deleted indexes. Other ones must
+		 * be kept for modifying to avoid existing index
+		 * references invalidation.
+		 */
+		lua_pushnil(L);
 		while (lua_next(L, -2) != 0) {
-			lua_pop(L, 1); /* remove the value. */
-			lua_pushnil(L); /* set the key to nil. */
-			lua_settable(L, -3);
-			lua_pushnil(L); /* start over. */
+			if (lua_isnumber(L, -2)) {
+				uint32_t iid = (uint32_t) lua_tonumber(L, -2);
+				if (space_index(space, iid) == NULL) {
+					lua_pushnumber(L, iid);
+					lua_pushnil(L);
+					lua_settable(L, -5);
+				}
+				lua_pop(L, 1);
+			} else {
+				/*
+				 * Remove all named references due
+				 * to possible renames. They are
+				 * rebuilt below.
+				 */
+				assert(lua_isstring(L, -2));
+				lua_pushvalue(L, -2);
+				lua_pushnil(L);
+				lua_settable(L, -5);
+				lua_pop(L, 2);
+				lua_pushnil(L);
+			}
 		}
 	}
 	/*
@@ -217,8 +238,15 @@ lbox_fillspace(struct lua_State *L, struct space *space, int i)
 			continue;
 		struct index_def *index_def = index->def;
 		struct index_opts *index_opts = &index_def->opts;
-		lua_pushnumber(L, index_def->iid);
-		lua_newtable(L);		/* space.index[k] */
+		lua_rawgeti(L, -1, index_def->iid);
+		if (lua_isnil(L, -1)) {
+			lua_pop(L, 1);
+			lua_pushnumber(L, index_def->iid);
+			lua_newtable(L);
+			lua_settable(L, -3);
+			lua_rawgeti(L, -1, index_def->iid);
+			assert(! lua_isnil(L, -1));
+		}
 
 		if (index_def->type == HASH || index_def->type == TREE) {
 			lua_pushboolean(L, index_opts->is_unique);
@@ -268,10 +296,23 @@ lbox_fillspace(struct lua_State *L, struct space *space, int i)
 
 		lua_settable(L, -3); /* space.index[k].parts */
 
+		lua_pushstring(L, "sequence_id");
 		if (k == 0 && space->sequence != NULL) {
 			lua_pushnumber(L, space->sequence->def->id);
-			lua_setfield(L, -2, "sequence_id");
+		} else {
+			/*
+			 * Remove sequence_id from existing
+			 * index. On new it is ok too - the field
+			 * just is not created.
+			 */
+			lua_pushnil(L);
 		}
+		/*
+		 * Optional attributes must be set via
+		 * 'raw' API to avoid __newindex
+		 * metamethod invocation.
+		 */
+		lua_rawset(L, -3);
 
 		if (space_is_vinyl(space)) {
 			lua_pushstring(L, "options");
@@ -294,9 +335,6 @@ lbox_fillspace(struct lua_State *L, struct space *space, int i)
 
 			lua_settable(L, -3);
 		}
-
-		lua_settable(L, -3); /* space.index[k] */
-		lua_rawgeti(L, -1, index_def->iid);
 		lua_setfield(L, -2, index_def->name);
 	}
 
