@@ -293,6 +293,48 @@ local function string_hex(inp)
     return ffi.string(res, len)
 end
 
+local function string_fromhex_new(inp)
+    if type(inp) ~= 'string' then
+        error(err_string_arg:format(1, 'string.fromhex', 'string', type(inp)), 2)
+    end
+
+    if inp:len() % 2 ~= 0 then
+        error(err_string_arg:format(1, 'string.fromhex', 'even string', 'odd string'), 2)
+    end
+
+    local zero = string.byte('0')
+    local nine = string.byte('9')
+    local asmall = string.byte('a')
+    local fsmall = string.byte('f')
+    local abig = string.byte('A')
+    local fbig = string.byte('F')
+    local function tonum(inp1)
+        if ((inp1 >= zero) and (inp1 <= nine)) then
+            return inp1 - zero
+        end
+        if ((inp1 >= asmall) and (inp1 <= fsmall)) then
+            return 10 + (inp1 - asmall)
+        end
+        if ((inp1 >= abig) and (inp1 <= fbig)) then
+            return 10 + (inp1 - abig)
+        end
+        return -1
+    end
+
+    local ans = {}
+    local len = inp:len() / 2
+    local uinp = ffi.cast('const char *', inp)
+    for i = 0, len - 1 do
+        local first = tonum(uinp[2 * i])
+        local second = tonum(uinp[2 * i + 1])
+        if ((first < 0) or (second < 0)) then
+            error(err_string_arg:format(1, 'string.fromhex', 'hex string', 'not hex string'), 2)
+        end
+        ans[i + 1] = string.char(first * 16 + second)
+    end
+    return table.concat(ans)
+end
+
 local function string_fromhex(inp)
     if type(inp) ~= 'string' then
         error(err_string_arg:format(1, 'string.fromhex', 'string', type(inp)), 2)
@@ -369,8 +411,9 @@ string.center     = string_center
 string.startswith = string_startswith
 string.endswith   = string_endswith
 string.hex        = string_hex
-string.fromhex  = string_fromhex
-string.fromhex_ffi  = string_fromhex_ffi
+string.fromhex    = string_fromhex
+string.fromhex_ffi= string_fromhex_ffi
+string.fromhex_new= string_fromhex_new
 string.strip      = string_strip
 string.lstrip      = string_lstrip
 string.rstrip      = string_rstrip
