@@ -1,4 +1,5 @@
 local ffi = require('ffi')
+local buffer = require('buffer')
 
 ffi.cdef[[
     const char *
@@ -6,6 +7,28 @@ ffi.cdef[[
            const char *needle,   size_t needle_len);
     int memcmp(const char *mem1, const char *mem2, size_t num);
     int isspace(int c);
+
+    typedef struct UCaseMap UCaseMap;
+    typedef int UErrorCode;
+
+    int32_t
+    ucasemap_utf8ToLower(const UCaseMap *csm, char *dest, int32_t destCapacity,
+                         const char *src, int32_t srcLength,
+                         UErrorCode *pErrorCode);
+
+    int32_t
+    ucasemap_utf8ToUpper(const UCaseMap *csm, char *dest, int32_t destCapacity,
+                         const char *src, int32_t srcLength,
+                         UErrorCode *pErrorCode);
+
+    UCaseMap *
+    ucasemap_open(const char *locale, uint32_t options, UErrorCode *pErrorCode);
+
+    void
+    ucasemap_close(UCaseMap *csm);
+
+    const char *
+    u_errorName(UErrorCode code);
 ]]
 
 local c_char_ptr = ffi.typeof('const char *')
@@ -313,6 +336,121 @@ local function string_rstrip(inp)
     return (string.gsub(inp, "(.-)%s*$", "%1"))
 end
 
+--
+-- ICU bindings.
+--
+--
+-- Ucasemap cache allows to do not create a new UCaseMap on each
+-- u_upper/u_lower call. References are weak to do not keep all
+-- ever created maps, so the cache is cleared periodically.
+--
+local ucasemap_cache = setmetatable({}, {__mode = 'v'})
+local errcode = ffi.new('int[1]')
+errcode[0] = 0
+--
+-- ICU UCaseMethod requires 0 error code as input, so after any
+-- error the errcode must be nullified.
+--
+local function icu_clear_error()
+    errcode[0] = 0
+end
+--
+-- String representation of the latest ICU error.
+--
+local function icu_error()
+    return ffi.string(ffi.C.u_errorName(errcode[0]))
+end
+--
+-- Find cached UCaseMap for @a locale, or create a new one and
+-- cache it.
+-- @param locale String locale or box.NULL for default.
+-- @retval nil Can neither get or create a UCaseMap.
+-- @retval not nil Needed UCaseMap.
+--
+local function ucasemap_retrieve(locale)
+    local ret = ucasemap_cache[locale]
+    if not ret then
+        ret = ffi.C.ucasemap_open(c_char_ptr(locale), 0, errcode)
+        if ret ~= nil then
+            ffi.gc(ret, ffi.C.ucasemap_close)
+            ucasemap_cache[locale] = ret
+        end
+    end
+    return ret
+end
+--
+-- Check ICU options for string.u_upper/u_lower.
+-- @param opts Options. Can contain only one option - locale.
+-- @param usage_err What to throw if opts types are violated.
+-- @retval String locale if found.
+-- @retval box.NULL if locale is not found.
+--
+local function icu_check_case_opts(opts, usage_err)
+    if opts then
+        if type(opts) ~= 'table' then
+            error(usage_err)
+        end
+        if opts.locale then
+            if type(opts.locale) ~= 'string' then
+                error(usage_err)
+            end
+            return opts.locale
+        end
+    end
+    return box.NULL
+end
+--
+-- Create upper/lower case version of @an inp string.
+-- @param inp Input string.
+-- @param opts Options. Can contain only one option - locale. In
+--        different locales different capital letters can exist
+--        for the same symbol. For example, in turkish locale
+--        upper('i') == 'İ', in english locale it is 'I'. See ICU
+--        documentation for locales.
+-- @param func Upper or lower FFI function.
+-- @param usage What to print on usage error.
+-- @retval nil, error Error.
+-- @retval not nil Uppercase version of @an inp.
+--
+local function string_u_to_case_impl(inp, opts, func, usage)
+    if type(inp) ~= 'string' then
+        error(usage)
+    end
+    icu_clear_error()
+    local map = ucasemap_retrieve(icu_check_case_opts(opts, usage))
+    if not map then
+        return nil, icu_error()
+    end
+    local src_len = #inp
+    inp = c_char_ptr(inp)
+    local buf = buffer.IBUF_SHARED
+    local buf_raw, ret
+    -- +1 for NULL termination. Else error appears in errcode.
+    local dst_len = src_len + 1
+::do_convert::
+    buf:reset()
+    buf_raw = buf:alloc(dst_len)
+    ret = func(map, buf_raw, dst_len, inp, src_len, errcode)
+    if ret <= dst_len then
+        if ret == 0 and errcode[0] ~= 0 then
+            return nil, icu_error()
+        end
+        return ffi.string(buf_raw, ret)
+    else
+        dst_len = ret + 1
+        goto do_convert
+    end
+end
+
+local function string_u_upper(inp, opts)
+    local usage = 'Usage: string.u_upper(str, {[locale = <string>}])'
+    return string_u_to_case_impl(inp, opts, ffi.C.ucasemap_utf8ToUpper, usage)
+end
+
+local function string_u_lower(inp, opts)
+    local usage = 'Usage: string.u_lower(str, {[locale = <string>}])'
+    return string_u_to_case_impl(inp, opts, ffi.C.ucasemap_utf8ToLower, usage)
+end
 
 -- It'll automatically set string methods, too.
 local string = require('string')
@@ -326,3 +464,5 @@ string.hex        = string_hex
 string.strip      = string_strip
 string.lstrip      = string_lstrip
 string.rstrip      = string_rstrip
+string.u_upper    = string_u_upper
+string.u_lower    = string_u_lower

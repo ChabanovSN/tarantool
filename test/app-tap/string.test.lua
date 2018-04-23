@@ -3,7 +3,7 @@
 local tap = require('tap')
 local test = tap.test("string extensions")
 
-test:plan(5)
+test:plan(6)
 
 test:test("split", function(test)
     test:plan(10)
@@ -112,6 +112,40 @@ test:test("hex", function(test)
     test:plan(2)
     test:is(string.hex("hello"), "68656c6c6f", "hex non-empty string")
     test:is(string.hex(""), "", "hex empty string")
+end)
+
+test:test("unicode", function(test)
+    test:plan(13)
+    local str = 'хеЛлоу вОрЛд ё Ё я Я э Э ъ Ъ hElLo WorLd 1234 i I İ 勺#☢༺'
+    local upper_res = 'ХЕЛЛОУ ВОРЛД Ё Ё Я Я Э Э Ъ Ъ HELLO WORLD 1234 I I İ 勺#☢༺'
+    local upper_turkish = 'ХЕЛЛОУ ВОРЛД Ё Ё Я Я Э Э Ъ Ъ HELLO WORLD 1234 İ I İ 勺#☢༺'
+    local lower_res = 'хеллоу ворлд ё ё я я э э ъ ъ hello world 1234 i i i̇ 勺#☢༺'
+    local lower_turkish = 'хеллоу ворлд ё ё я я э э ъ ъ hello world 1234 i ı i 勺#☢༺'
+    local s = string.u_upper(str)
+    test:is(s, upper_res, 'default locale upper')
+    s = string.u_lower(str)
+    test:is(s, lower_res, 'default locale lower')
+    s = string.u_upper(str, {locale = 'en_US'})
+    test:is(s, upper_res, 'en_US locale upper')
+    s = string.u_lower(str, {locale = 'en_US'})
+    test:is(s, lower_res, 'en_US locale lower')
+    s = string.u_upper(str, {locale = 'ru_RU'})
+    test:is(s, upper_res, 'ru_RU locale upper')
+    s = string.u_lower(str, {locale = 'ru_RU'})
+    test:is(s, lower_res, 'ru_RU locale lower')
+    s = string.u_upper(str, {locale = 'tr_TR'})
+    test:is(s, upper_turkish, 'tr_TR locale upper')
+    s = string.u_lower(str, {locale = 'tr_TR'})
+    test:is(s, lower_turkish, 'tr_TR locale lower')
+    local err
+    s, err = string.u_upper(str, {locale = 'not_existing locale tratatatata'})
+    test:is(s, upper_res, 'incorrect locale turns into default upper')
+    test:isnil(err, 'upper error is nil')
+    s, err = string.u_lower(str, {locale = 'not_existing locale tratatatata'})
+    test:is(s, lower_res, 'incorrect locale turns into default lower')
+    test:isnil(err, 'lower error is nil')
+    test:is(string.u_upper('ß', {locale = 'de_DE'}), 'SS',
+            'ß produces two symbols')
 end)
 
 test:test("strip", function(test)
