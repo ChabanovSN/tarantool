@@ -29,6 +29,9 @@ ffi.cdef[[
 
     const char *
     u_errorName(UErrorCode code);
+
+    int
+    u_count(const char *s, int bsize, uint8_t flags);
 ]]
 
 local c_char_ptr = ffi.typeof('const char *')
@@ -452,6 +455,59 @@ local function string_u_lower(inp, opts)
     return string_u_to_case_impl(inp, opts, ffi.C.ucasemap_utf8ToLower, usage)
 end
 
+local U_COUNT_CLASS_ALL = 0
+local U_COUNT_CLASS_UPPER_LETTER = 1
+local U_COUNT_CLASS_LOWER_LETTER = 2
+local U_COUNT_CLASS_LETTER = 4
+local U_COUNT_CLASS_DIGIT = 8
+
+--
+-- Calculate count of symbols matching the needed classes.
+-- @param inp Input UTF8 string.
+-- @param opts Options with needed classes. It supports 'all',
+--        'upper', 'lower', 'letter', 'digit'. Opts is a table,
+--        where needed class key is set to true. By default all
+--        classes are needed, and count works like strlen (not
+--        bsize, like Lua operator '#').
+-- @retval not nil Summary count of needed symbols.
+-- @retval nil, position Invalid UTF8 on returned position.
+--
+local function string_u_count(inp, opts)
+    local usage = 'Usage: string.u_count(str)'
+    if type(inp) ~= 'string' then
+        error(usage)
+    end
+    local flags = 0
+    if opts then
+        if type(opts) ~= 'table' then
+            error(usage)
+        end
+        if not opts.all then
+            if not opts.letter then
+                if opts.upper then
+                    flags = bit.bor(flags, U_COUNT_CLASS_UPPER_LETTER)
+                end
+                if opts.lower then
+                    flags = bit.bor(flags, U_COUNT_CLASS_LOWER_LETTER)
+                end
+            else
+                flags = bit.bor(flags, U_COUNT_CLASS_LETTER)
+            end
+            if opts.digit then
+                flags = bit.bor(flags, U_COUNT_CLASS_DIGIT)
+            end
+        end
+    end
+    local len = #inp
+    inp = c_char_ptr(inp)
+    local ret = ffi.C.u_count(inp, len, flags)
+    if ret >= 0 then
+        return ret
+    else
+        return nil, -ret
+    end
+end
+
 -- It'll automatically set string methods, too.
 local string = require('string')
 string.split      = string_split
@@ -466,3 +522,4 @@ string.lstrip      = string_lstrip
 string.rstrip      = string_rstrip
 string.u_upper    = string_u_upper
 string.u_lower    = string_u_lower
+string.u_count    = string_u_count

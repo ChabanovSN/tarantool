@@ -40,7 +40,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <limits.h>
-
+#include <unicode/utf8.h>
+#include <unicode/uchar.h>
 #include <msgpuck/msgpuck.h> /* mp_char2escape[] table */
 
 #include "say.h"
@@ -320,4 +321,51 @@ fpconv_check()
 	 * Just check that locale decimal point is '.'.
 	 */
 	assert(buf[1] == '.');
+}
+
+enum u_count_class {
+	U_COUNT_CLASS_ALL = 0,
+	U_COUNT_CLASS_UPPER_LETTER = 1,
+	U_COUNT_CLASS_LOWER_LETTER = 2,
+	U_COUNT_CLASS_LETTER = 4,
+	U_COUNT_CLASS_DIGIT = 8,
+};
+
+/**
+ * Get length of a UTF8 string.
+ * @param s UTF8 string.
+ * @param bsize Binary size of @an s.
+ * @param flags Binary OR of u_count_class flags.
+ * @retval >=0 Count of symbols matched one of @a flags.
+ * @retval  <0 Invalid UTF8 on the position -1 * returned value.
+ */
+int
+u_count(const char *s, int bsize, uint8_t flags)
+{
+	int offset = 0;
+	int len = 0;
+	UChar32 c;
+	if (flags == 0) {
+		/* The fastest path - just calculate strlen. */
+		while (offset < bsize) {
+			U8_NEXT(s, offset, bsize, c);
+			if (c == U_SENTINEL)
+				return -(len + 1);
+			++len;
+		}
+		return len;
+	}
+	/* Slow path - check each symbol to match flags. */
+	while (offset < bsize) {
+		U8_NEXT(s, offset, bsize, c);
+		if (c == U_SENTINEL)
+			return -(len + 1);
+		uint8_t f = 0;
+		f |= (flags & U_COUNT_CLASS_UPPER_LETTER) != 0 && u_isupper(c);
+		f |= (flags & U_COUNT_CLASS_LOWER_LETTER) != 0 && u_islower(c);
+		f |= (flags & U_COUNT_CLASS_LETTER) != 0 && u_isalpha(c);
+		f |= (flags & U_COUNT_CLASS_DIGIT) != 0 && u_isdigit(c);
+		len += f != 0 ? 1 : 0;
+	}
+	return len;
 }

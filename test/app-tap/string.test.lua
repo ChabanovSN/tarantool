@@ -115,7 +115,7 @@ test:test("hex", function(test)
 end)
 
 test:test("unicode", function(test)
-    test:plan(13)
+    test:plan(28)
     local str = 'хеЛлоу вОрЛд ё Ё я Я э Э ъ Ъ hElLo WorLd 1234 i I İ 勺#☢༺'
     local upper_res = 'ХЕЛЛОУ ВОРЛД Ё Ё Я Я Э Э Ъ Ъ HELLO WORLD 1234 I I İ 勺#☢༺'
     local upper_turkish = 'ХЕЛЛОУ ВОРЛД Ё Ё Я Я Э Э Ъ Ъ HELLO WORLD 1234 İ I İ 勺#☢༺'
@@ -146,6 +146,31 @@ test:test("unicode", function(test)
     test:isnil(err, 'lower error is nil')
     test:is(string.u_upper('ß', {locale = 'de_DE'}), 'SS',
             'ß produces two symbols')
+    -- Test u_count.
+    test:is(string.u_count(str), 56, 'u_count works')
+    s, err = string.u_count("\xE2\x80\xE2")
+    test:is(err, 1, 'u_count checks for errors')
+    test:isnil(s, 'retval is nil on error')
+    test:is(string.u_count(''), 0, 'u_count works on empty strings')
+    s, err = pcall(string.u_count, 100)
+    test:isnt(err:find('Usage'), nil, 'usage is checked')
+    -- Test different symbol classes.
+    s, err = pcall(string.u_count, str, 1234)
+    test:isnt(err:find('Usage'), nil, 'usage checks options')
+    test:is(string.u_count(str, {all = true}), 56, 'option all')
+    test:is(string.u_count(str, {upper = true}), 13, 'option upper')
+    test:is(string.u_count(str, {lower = true}), 19, 'option lower')
+    test:is(string.u_count(str, {upper = true, lower = true}), 32,
+            'options upper and lower')
+    test:is(string.u_count(str, {digit = true}), 4, 'option digit')
+    test:is(string.u_count(str, {digit = true, upper = true}), 17,
+            'options digit and upper')
+    test:is(string.u_count('꜁ǅ', {letter = true}), 1,
+            'option letter for title and modifier symbols')
+    test:is(string.u_count('勺', {letter = true}), 1,
+            'option letter for non-case symbols')
+    test:is(string.u_count('勺', {upper = true, lower = true}), 0,
+                           'non-case symbols are not visible for upper/lower')
 end)
 
 test:test("strip", function(test)
