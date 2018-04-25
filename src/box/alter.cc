@@ -2429,6 +2429,13 @@ on_replace_dd_collation(struct trigger * /* trigger */, void *event)
 		/* TODO: Check that no index uses the collation */
 		int32_t old_id = tuple_field_u32_xc(old_tuple,
 						    BOX_COLLATION_FIELD_ID);
+		if (coll_is_system(old_id)) {
+			/*
+			 * Built-in collations can be deleted from
+			 * _collation, but not from the cache.
+			 */
+			return;
+		}
 		struct coll *old_coll = coll_by_id(old_id);
 		assert(old_coll != NULL);
 		access_check_ddl(old_coll->name, old_coll->owner_id,
@@ -2451,6 +2458,13 @@ on_replace_dd_collation(struct trigger * /* trigger */, void *event)
 		coll_def_new_from_tuple(new_tuple, &new_def);
 		access_check_ddl(new_def.name, new_def.owner_id, SC_COLLATION,
 				 PRIV_C, false);
+		if (coll_is_system(new_def.id)) {
+			/*
+			 * Built-in collation is in the cache
+			 * already.
+			 */
+			return;
+		}
 		/*
 		 * Set on_rollback before the collation is
 		 * inserted into the cache. Else if the trigger

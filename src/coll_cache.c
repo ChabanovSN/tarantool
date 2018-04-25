@@ -45,7 +45,41 @@ coll_cache_init()
 			 "coll_cache_id");
 		return -1;
 	}
+	struct coll *replaced, *unicode_coll, *unicode_ci_coll;
+	struct coll_def def;
+	memset(&def, 0, sizeof(def));
+	def.id = COLLATION_ID_UNICODE;
+	def.owner_id = 1;
+	def.name = "unicode";
+	def.name_len = strlen(def.name);
+	def.locale = "";
+	def.type = COLL_TYPE_ICU;
+	unicode_coll = coll_new(&def);
+	if (unicode_coll == NULL)
+		goto err_unicode;
+	if (coll_cache_replace(unicode_coll, &replaced) != 0)
+		goto err_unicode_replace;
+	assert(replaced == NULL);
+
+	def.id = COLLATION_ID_UNICODE_CI;
+	def.name = "unicode_ci";
+	def.name_len = strlen(def.name);
+	def.icu.strength = COLL_ICU_STRENGTH_PRIMARY;
+	unicode_ci_coll = coll_new(&def);
+	if (unicode_ci_coll == NULL)
+		goto err_unicode_ci;
+	if (coll_cache_replace(unicode_ci_coll, &replaced) != 0)
+		goto err_unicode_ci_replace;
 	return 0;
+err_unicode_ci_replace:
+	coll_delete(unicode_ci_coll);
+err_unicode_ci:
+	coll_cache_delete(unicode_coll);
+err_unicode_replace:
+	coll_delete(unicode_coll);
+err_unicode:
+	mh_i32ptr_delete(coll_cache_id);
+	return -1;
 }
 
 /** Delete global hash tables. */

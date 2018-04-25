@@ -63,6 +63,13 @@ const char *coll_icu_strength_strs[] = {
 	"IDENTICAL"
 };
 
+bool
+coll_is_system(int coll_id)
+{
+	return coll_id == COLLATION_ID_UNICODE ||
+	       coll_id == COLLATION_ID_UNICODE_CI;
+}
+
 static int64_t
 icu_on_off_from_str(const char *str, uint32_t len)
 {

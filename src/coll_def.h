@@ -49,6 +49,19 @@ enum coll_type {
 
 extern const char *coll_type_strs[];
 
+/** Built-in collations. */
+enum {
+	COLLATION_ID_UNICODE = 1,
+	COLLATION_ID_UNICODE_CI = 2,
+};
+
+/**
+ * Check if a collation is system by its ID. System collations can
+ * not be deleted.
+ */
+bool
+coll_is_system(int coll_id);
+
 /*
  * ICU collation options. See
  * http://icu-project.org/apiref/icu4c/ucol_8h.html#a583fbe7fc4a850e2fcc692e766d2826c
