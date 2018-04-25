@@ -2376,19 +2376,31 @@ coll_cache_rollback(struct trigger *trigger, void *event)
 	struct txn_stmt *stmt = txn_last_stmt((struct txn*) event);
 	struct tuple *new_tuple = stmt->new_tuple;
 
-	if (new_tuple != NULL) {
+	if (new_tuple == NULL && old_coll != NULL) {
+		/* Rollback DELETE. */
+		if (coll_by_id(old_coll->id) == old_coll) {
+			/*
+			 * Nothing to do - the tx had been failed
+			 * before old collation deletion.
+			 */
+			return;
+		}
+		struct coll *replaced;
+		if (coll_cache_replace(old_coll, &replaced) != 0) {
+			panic("Out of memory on insertion into collation "\
+			      "cache");
+		}
+		assert(replaced == NULL);
+	} else {
+		assert(new_tuple != NULL && old_coll == NULL);
 		uint32_t new_id = tuple_field_u32_xc(new_tuple,
 						     BOX_COLLATION_FIELD_ID);
 		struct coll *new_coll = coll_by_id(new_id);
-		coll_cache_delete(new_coll);
-		coll_delete(new_coll);
-	}
-
-	if (old_coll != NULL) {
-		struct coll *replaced;
-		int rc = coll_cache_replace(old_coll, &replaced);
-		assert(rc == 0 && replaced == NULL);
-		(void)rc;
+		/* Can be NULL, if failed before cache update. */
+		if (new_coll != NULL) {
+			coll_cache_delete(new_coll);
+			coll_delete(new_coll);
+		}
 	}
 }
 
@@ -2412,59 +2424,54 @@ on_replace_dd_collation(struct trigger * /* trigger */, void *event)
 	struct tuple *old_tuple = stmt->old_tuple;
 	struct tuple *new_tuple = stmt->new_tuple;
 	txn_check_singlestatement_xc(txn, "Space _collation");
-	struct coll *old_coll = NULL;
-	if (old_tuple != NULL) {
+	if (new_tuple == NULL && old_tuple != NULL) {
+		/* DELETE */
 		/* TODO: Check that no index uses the collation */
-		uint32_t old_id = tuple_field_u32_xc(old_tuple,
-						     BOX_COLLATION_FIELD_ID);
-		old_coll = coll_by_id(old_id);
+		int32_t old_id = tuple_field_u32_xc(old_tuple,
+						    BOX_COLLATION_FIELD_ID);
+		struct coll *old_coll = coll_by_id(old_id);
 		assert(old_coll != NULL);
 		access_check_ddl(old_coll->name, old_coll->owner_id,
-				 SC_COLLATION,
-				 new_tuple == NULL ? PRIV_D: PRIV_A,
-				 false);
-
-		struct trigger *on_commit =
-			txn_alter_trigger_new(coll_cache_delete_coll, old_coll);
-		txn_on_commit(txn, on_commit);
-	}
-
-	if (new_tuple == NULL) {
-		/* Simple DELETE */
-		assert(old_tuple != NULL);
-		coll_cache_delete(old_coll);
-
+				 SC_COLLATION, PRIV_D, false);
+		/*
+		 * Set on_rollback before deletion from the cache.
+		 * Else rollback setting can fail and the
+		 * collation will be lost.
+		 */
 		struct trigger *on_rollback =
 			txn_alter_trigger_new(coll_cache_rollback, old_coll);
 		txn_on_rollback(txn, on_rollback);
-		return;
-	}
-
-	struct coll_def new_def;
-	coll_def_new_from_tuple(new_tuple, &new_def);
-	access_check_ddl(new_def.name, new_def.owner_id, SC_COLLATION,
-			 old_tuple == NULL ? PRIV_C : PRIV_A, false);
-	struct coll *new_coll = coll_new(&new_def);
-	if (new_coll == NULL)
-		diag_raise();
-	auto def_guard = make_scoped_guard([=] { coll_delete(new_coll); });
-
-	struct coll *replaced;
-	if (coll_cache_replace(new_coll, &replaced) != 0)
-		diag_raise();
-	if (replaced == NULL && old_coll != NULL) {
-		/*
-		 * ID of a collation was changed.
-		 * Remove collation by old ID.
-		 */
 		coll_cache_delete(old_coll);
+		struct trigger *on_commit =
+			txn_alter_trigger_new(coll_cache_delete_coll, old_coll);
+		txn_on_commit(txn, on_commit);
+	} else if (new_tuple != NULL && old_tuple == NULL) {
+		/* INSERT */
+		struct coll_def new_def;
+		coll_def_new_from_tuple(new_tuple, &new_def);
+		access_check_ddl(new_def.name, new_def.owner_id, SC_COLLATION,
+				 PRIV_C, false);
+		/*
+		 * Set on_rollback before the collation is
+		 * inserted into the cache. Else if the trigger
+		 * creation fails the collation will not be
+		 * deleted on abort.
+		 */
+		struct trigger *on_rollback =
+			txn_alter_trigger_new(coll_cache_rollback, NULL);
+		txn_on_rollback(txn, on_rollback);
+		struct coll *new_coll = coll_new(&new_def);
+		if (new_coll == NULL)
+			diag_raise();
+		struct coll *replaced;
+		if (coll_cache_replace(new_coll, &replaced) != 0)
+			diag_raise();
+		assert(replaced == NULL);
+	} else {
+		/* UPDATE */
+		assert(new_tuple != NULL && old_tuple != NULL);
+		tnt_raise(ClientError, ER_UNSUPPORTED, "collation", "alter");
 	}
-
-	struct trigger *on_rollback =
-		txn_alter_trigger_new(coll_cache_rollback, old_coll);
-	txn_on_rollback(txn, on_rollback);
-
-	def_guard.is_active = false;
 }
 
 /**
