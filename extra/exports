@@ -41,6 +41,8 @@ title_get_status
 exception_get_string
 exception_get_int
 u_count
+u_compare
+u_icompare
 
 tarantool_lua_ibuf
 uuid_nil

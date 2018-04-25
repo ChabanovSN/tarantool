@@ -32,6 +32,12 @@ ffi.cdef[[
 
     int
     u_count(const char *s, int bsize, uint8_t flags);
+
+    int
+    u_compare(const char *s1, size_t len1, const char *s2, size_t len2);
+
+    int
+    u_icompare(const char *s1, size_t len1, const char *s2, size_t len2);
 ]]
 
 local c_char_ptr = ffi.typeof('const char *')
@@ -508,6 +514,33 @@ local function string_u_count(inp, opts)
     end
 end
 
+--
+-- Compare two UTF8 strings.
+-- @param inp1 First string.
+-- @param inp2 Second string.
+-- @param func Comparator - case sensitive or insensitive.
+-- @param usage Error on incorrect usage.
+-- @retval  <0 inp1 < inp2
+-- @retval  >0 inp1 > inp2
+-- @retval ==0 inp1 == inp2
+--
+local function string_u_compare_impl(inp1, inp2, func, usage)
+    if type(inp1) ~= 'string' or type(inp2) ~= 'string' then
+        error(usage)
+    end
+    return func(c_char_ptr(inp1), #inp1, c_char_ptr(inp2), #inp2)
+end
+
+local function string_u_compare(inp1, inp2)
+    return string_u_compare_impl(inp1, inp2, ffi.C.u_compare,
+                                 'Usage: string.u_compare(<string>, <string>)')
+end
+
+local function string_u_icompare(inp1, inp2)
+    return string_u_compare_impl(inp1, inp2, ffi.C.u_icompare,
+                                 'Usage: string.u_icompare(<string>, <string>)')
+end
+
 -- It'll automatically set string methods, too.
 local string = require('string')
 string.split      = string_split
@@ -523,3 +556,5 @@ string.rstrip      = string_rstrip
 string.u_upper    = string_u_upper
 string.u_lower    = string_u_lower
 string.u_count    = string_u_count
+string.u_compare  = string_u_compare
+string.u_icompare = string_u_icompare

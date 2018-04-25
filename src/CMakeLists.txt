@@ -114,7 +114,7 @@ endif ()
 
 add_library(core STATIC ${core_sources})
 target_link_libraries(core
-    salad small pthread
+    salad small pthread misc
     ${LIBEV_LIBRARIES}
     ${LIBEIO_LIBRARIES}
     ${LIBCORO_LIBRARIES}

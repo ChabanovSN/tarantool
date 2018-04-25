@@ -115,7 +115,7 @@ test:test("hex", function(test)
 end)
 
 test:test("unicode", function(test)
-    test:plan(28)
+    test:plan(41)
     local str = 'хеЛлоу вОрЛд ё Ё я Я э Э ъ Ъ hElLo WorLd 1234 i I İ 勺#☢༺'
     local upper_res = 'ХЕЛЛОУ ВОРЛД Ё Ё Я Я Э Э Ъ Ъ HELLO WORLD 1234 I I İ 勺#☢༺'
     local upper_turkish = 'ХЕЛЛОУ ВОРЛД Ё Ё Я Я Э Э Ъ Ъ HELLO WORLD 1234 İ I İ 勺#☢༺'
@@ -171,6 +171,22 @@ test:test("unicode", function(test)
             'option letter for non-case symbols')
     test:is(string.u_count('勺', {upper = true, lower = true}), 0,
                            'non-case symbols are not visible for upper/lower')
+    -- Test compare.
+    local s1 = '☢'
+    local s2 = 'İ'
+    test:is(s1 < s2, false, 'test binary cmp')
+    test:is(string.u_compare(s1, s2) < 0, true, 'test unicode <')
+    test:is(string.u_compare(s1, s1) == 0, true, 'test unicode eq')
+    test:is(string.u_compare(s2, s1) > 0, true, 'test unicode >')
+    test:is(string.u_icompare('a', 'A') == 0, true, 'test icase ==')
+    test:is(string.u_icompare('b', 'A') > 0, true, 'test icase >, first')
+    test:is(string.u_icompare('B', 'a') > 0, true, 'test icase >, second >')
+    test:is(string.u_compare('', '') == 0, true, 'test empty compare')
+    test:is(string.u_compare('', 'a') < 0, true, 'test left empty compare')
+    test:is(string.u_compare('a', '') > 0, true, 'test right empty compare')
+    test:is(string.u_icompare('', '') == 0, true, 'test empty icompare')
+    test:is(string.u_icompare('', 'a') < 0, true, 'test left empty icompare')
+    test:is(string.u_icompare('a', '') > 0, true, 'test right empty icompare')
 end)
 
 test:test("strip", function(test)

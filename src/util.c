@@ -45,6 +45,7 @@
 #include <msgpuck/msgpuck.h> /* mp_char2escape[] table */
 
 #include "say.h"
+#include "coll_cache.h"
 
 /** Find a string in an array of strings.
  *
@@ -368,4 +369,34 @@ u_count(const char *s, int bsize, uint8_t flags)
 		len += f != 0 ? 1 : 0;
 	}
 	return len;
+}
+
+/**
+ * Compare two UTF8 strings.
+ * @param s1 First string.
+ * @param len1 Binary size of @a s1.
+ * @param s2 Second string.
+ * @param len2 Binary size of @a s2.
+ * @retval Same as strcmp.
+ */
+int
+u_compare(const char *s1, size_t len1, const char *s2, size_t len2)
+{
+	struct coll *coll = coll_by_id(COLLATION_ID_UNICODE);
+	return coll->cmp(s1, len1, s2, len2, coll);
+}
+
+/**
+ * Case insensitive compare two UTF8 strings.
+ * @param s1 First string.
+ * @param len1 Binary size of @a s1.
+ * @param s2 Second string.
+ * @param len2 Binary size of @a s2.
+ * @retval Same as strcmp.
+ */
+int
+u_icompare(const char *s1, size_t len1, const char *s2, size_t len2)
+{
+	struct coll *coll = coll_by_id(COLLATION_ID_UNICODE_CI);
+	return coll->cmp(s1, len1, s2, len2, coll);
 }
