@@ -40,7 +40,7 @@ extern "C" {
 #include <errinj.h>
 
 #include "lua/utils.h"
-#include "box/error.h"
+#include "src/error.h"
 
 static int
 luaT_error_raise(lua_State *L)

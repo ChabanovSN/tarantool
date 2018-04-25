@@ -43,7 +43,7 @@
 #include "third_party/base64.h"
 
 #include "coio.h"
-#include "box/errcode.h"
+#include "errcode.h"
 #include "lua/fiber.h"
 
 #define cfg luaL_msgpack_default

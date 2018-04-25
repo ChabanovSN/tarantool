@@ -25,7 +25,7 @@ function(rebuild_module_api)
         COMMAND ${CMAKE_C_COMPILER}
             ${cflags}
             -I ${CMAKE_SOURCE_DIR}/src -I ${CMAKE_BINARY_DIR}/src
-            -E ${CMAKE_SOURCE_DIR}/src/box/errcode.h > ${errcodefile}
+            -E ${CMAKE_SOURCE_DIR}/src/errcode.h > ${errcodefile}
         COMMAND
             grep "enum box_error_code" ${errcodefile} >> ${tmpfile}
         COMMAND cat ${CMAKE_CURRENT_SOURCE_DIR}/module_footer.h >> ${tmpfile}
@@ -34,7 +34,7 @@ function(rebuild_module_api)
         DEPENDS ${CMAKE_SOURCE_DIR}/extra/apigen
                 ${CMAKE_CURRENT_SOURCE_DIR}/module_header.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/module_footer.h
-                ${CMAKE_SOURCE_DIR}/src/box/errcode.h
+                ${CMAKE_SOURCE_DIR}/src/errcode.h
                 ${headers}
         )
 

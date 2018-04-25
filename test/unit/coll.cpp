@@ -1,9 +1,8 @@
-#include "box/coll.h"
+#include "coll.h"
 #include <iostream>
 #include <vector>
 #include <algorithm>
 #include <string.h>
-#include <box/coll_def.h>
 #include <assert.h>
 #include <msgpuck.h>
 #include <diag.h>

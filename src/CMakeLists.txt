@@ -94,6 +94,15 @@ set (core_sources
      random.c
      trigger.cc
      http_parser.c
+     error.cc
+     errcode.c
+     rmean.c
+     latency.c
+     histogram.c
+     coll_def.c
+     coll.c
+     coll_cache.c
+     opt_def.c
  )
 
 if (TARGET_OS_NETBSD)
@@ -112,9 +121,6 @@ target_link_libraries(core
     ${MSGPUCK_LIBRARIES}
     ${ICU_LIBRARIES}
 )
-
-add_library(stat STATIC rmean.c latency.c histogram.c)
-target_link_libraries(stat core)
 
 if (ENABLE_BACKTRACE AND NOT TARGET_OS_DARWIN)
 	target_link_libraries(core gcc_s ${UNWIND_LIBRARIES})
@@ -191,7 +197,7 @@ set(api_headers
     ${CMAKE_SOURCE_DIR}/src/box/box.h
     ${CMAKE_SOURCE_DIR}/src/box/index.h
     ${CMAKE_SOURCE_DIR}/src/box/iterator_type.h
-    ${CMAKE_SOURCE_DIR}/src/box/error.h
+    ${CMAKE_SOURCE_DIR}/src/error.h
     ${CMAKE_SOURCE_DIR}/src/box/lua/call.h
     ${CMAKE_SOURCE_DIR}/src/box/lua/tuple.h
     ${CMAKE_SOURCE_DIR}/src/latch.h

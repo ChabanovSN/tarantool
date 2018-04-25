@@ -90,10 +90,10 @@ add_executable(fiber_channel_stress.test fiber_channel_stress.cc)
 target_link_libraries(fiber_channel_stress.test core)
 
 add_executable(cbus_stress.test cbus_stress.c)
-target_link_libraries(cbus_stress.test core stat)
+target_link_libraries(cbus_stress.test core)
 
 add_executable(cbus.test cbus.c)
-target_link_libraries(cbus.test core unit stat)
+target_link_libraries(cbus.test core unit)
 
 add_executable(coio.test coio.cc)
 target_link_libraries(coio.test core eio bit uri unit)
@@ -133,9 +133,9 @@ add_executable(json_path.test json_path.c)
 target_link_libraries(json_path.test json_path unit ${ICU_LIBRARIES})
 
 add_executable(rmean.test rmean.cc)
-target_link_libraries(rmean.test stat unit)
+target_link_libraries(rmean.test core unit)
 add_executable(histogram.test histogram.c)
-target_link_libraries(histogram.test stat unit)
+target_link_libraries(histogram.test core unit)
 
 add_executable(say.test say.c)
 target_link_libraries(say.test core unit)

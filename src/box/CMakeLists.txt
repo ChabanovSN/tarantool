@@ -21,15 +21,12 @@ set_property(DIRECTORY PROPERTY ADDITIONAL_MAKE_CLEAN_FILES ${lua_sources})
 
 include_directories(${ZSTD_INCLUDE_DIRS})
 
-add_library(box_error STATIC error.cc errcode.c)
-target_link_libraries(box_error core stat)
-
 add_library(vclock STATIC vclock.c)
 target_link_libraries(vclock core)
 
 add_library(xrow STATIC xrow.c iproto_constants.c)
-target_link_libraries(xrow server core small vclock misc box_error
-                      scramble ${MSGPUCK_LIBRARIES})
+target_link_libraries(xrow server core small vclock misc scramble
+                      ${MSGPUCK_LIBRARIES})
 
 add_library(tuple STATIC
     tuple.c
@@ -41,20 +38,15 @@ add_library(tuple STATIC
     tuple_bloom.c
     tuple_dictionary.c
     key_def.cc
-    coll_def.c
-    coll.c
-    coll_cache.c
     field_def.c
-    opt_def.c
 )
-target_link_libraries(tuple json_path box_error core ${MSGPUCK_LIBRARIES} ${ICU_LIBRARIES} misc bit)
+target_link_libraries(tuple json_path core ${MSGPUCK_LIBRARIES} ${ICU_LIBRARIES} misc bit)
 
 add_library(xlog STATIC xlog.c)
-target_link_libraries(xlog core box_error crc32 ${ZSTD_LIBRARIES})
+target_link_libraries(xlog core crc32 ${ZSTD_LIBRARIES})
 
 add_library(box STATIC
     iproto.cc
-    error.cc
     xrow_io.cc
     tuple_convert.c
     identifier.c
@@ -132,6 +124,6 @@ add_library(box STATIC
     lua/xlog.c
     ${bin_sources})
 
-target_link_libraries(box box_error tuple stat xrow xlog vclock crc32 scramble
+target_link_libraries(box tuple xrow xlog vclock crc32 scramble
                       ${common_libraries})
 add_dependencies(box build_bundled_libs)

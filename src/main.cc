@@ -63,7 +63,7 @@
 #include "tt_pthread.h"
 #include "lua/init.h"
 #include "box/box.h"
-#include "box/error.h"
+#include "error.h"
 #include "scoped_guard.h"
 #include "random.h"
 #include "tt_uuid.h"

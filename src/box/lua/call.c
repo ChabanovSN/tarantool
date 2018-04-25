@@ -30,7 +30,7 @@
  */
 #include "box/lua/call.h"
 #include "box/call.h"
-#include "box/error.h"
+#include <error.h>
 #include "fiber.h"
 
 #include "lua/utils.h"
