@@ -174,7 +174,6 @@ BuildXlogError(const char *file, unsigned line, const char *format, ...)
 	}
 }
 
-#include "schema.h"
 #include "trigger.h"
 
 struct rlist on_access_denied = RLIST_HEAD_INITIALIZER(on_access_denied);

@@ -133,6 +133,18 @@ extern const struct type_info type_ClientError;
 extern const struct type_info type_XlogError;
 extern const struct type_info type_AccessDeniedError;
 
+/**
+ * Context passed to on_access_denied trigger.
+ */
+struct on_access_denied_ctx {
+	/** Type of declined access */
+	const char *access_type;
+	/** Type of object the required access was denied to */
+	const char *object_type;
+	/** Name of object the required access was denied to */
+	const char *object_name;
+};
+
 #if defined(__cplusplus)
 } /* extern "C" */
 #include "exception.h"
