@@ -1882,13 +1882,6 @@ struct Column {
 };
 
 /*
- * A sort order can be either ASC or DESC.
- */
-#define SQLITE_SO_ASC       0	/* Sort in ascending order */
-#define SQLITE_SO_DESC      1	/* Sort in ascending order */
-#define SQLITE_SO_UNDEFINED -1	/* No sort order specified */
-
-/*
  * Column affinity types.
  *
  * These used to have mnemonic name like 'i' for SQLITE_AFF_INTEGER and
@@ -2143,7 +2136,8 @@ struct Index {
 	char *zColAff;		/* String defining the affinity of each column */
 	Index *pNext;		/* The next index associated with the same table */
 	Schema *pSchema;	/* Schema containing this index */
-	u8 *aSortOrder;		/* for each column: True==DESC, False==ASC */
+	/** Sorting order for each column. */
+	enum sort_order *sort_order;
 	/** Array of collation sequences for index. */
 	struct coll **coll_array;
 	Expr *pPartIdxWhere;	/* WHERE clause for partial indices */
@@ -3539,6 +3533,16 @@ struct coll *
 sql_default_coll();
 bool
 space_is_view(Table *);
+
+/**
+ * Return name of given column collation from index.
+ *
+ * @param idx Index which is used to fetch column.
+ * @param column Number of column.
+ * @retval Sort order of requested column.
+ */
+enum sort_order
+sql_index_column_sort_order(Index *idx, uint32_t column);
 
 void sqlite3EndTable(Parse *, Token *, Token *, Select *);
 int
